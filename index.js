@@ -36,7 +36,7 @@ app.post('/lead', async (req, res) => {
           nombre,
           instagram,
           ultima_accion: mensaje || '',
-          origen: 'Instagram',
+          origen: 'instagram',
           tipo: 'Orgánico',
           estado: 'Nuevo',
           source: 'manychat',
