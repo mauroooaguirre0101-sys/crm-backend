@@ -1,17 +1,61 @@
 const express = require('express');
+const { createClient } = require('@supabase/supabase-js');
+
 const app = express();
+
+// 🔑 Conexión a Supabase usando variables de Railway
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 app.use(express.json());
 
+// 🟢 Ruta de prueba
 app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
-app.post('/lead', (req, res) => {
-  console.log(req.body);
-  res.json({ ok: true });
+// 🔥 Endpoint para guardar leads
+app.post('/lead', async (req, res) => {
+  try {
+    const { nombre, instagram, mensaje } = req.body;
+
+    // Validación básica
+    if (!nombre || !instagram) {
+      return res.status(400).json({ error: 'Faltan datos obligatorios' });
+    }
+
+    const { data, error } = await supabase
+      .from('leads')
+      .insert([
+        {
+          nombre,
+          instagram,
+          ultima_accion: mensaje || '',
+          origen: 'Instagram',
+          tipo: 'Orgánico',
+          estado: 'Nuevo',
+          source: 'manychat',
+          cliente_id: 'cliente_1' // luego lo haremos dinámico
+        }
+      ]);
+
+    if (error) {
+      console.error('❌ Error Supabase:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    console.log('✅ Lead guardado:', data);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ Error servidor:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
 
+// 🚀 Puerto (Railway lo define automáticamente)
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
