@@ -37,7 +37,7 @@ app.post('/lead', async (req, res) => {
           instagram,
           ultima_accion: mensaje || '',
           origen: 'Inbound',
-          tipo: 'Orgánico',
+          tipo: 'Organico',
           estado: 'Nuevo',
           source: 'manychat',
           cliente_id: 'cliente_1' // luego lo hacemos dinámico
