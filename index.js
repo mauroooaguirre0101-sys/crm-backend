@@ -19,10 +19,10 @@ app.get('/', (req, res) => {
 // 🔥 Endpoint para guardar leads
 app.post('/lead', async (req, res) => {
   try {
-    const { nombre, instagram, mensaje } = req.body;
+    const { nombre, instagram, mensaje, cliente_id } = req.body;
 
-    // Validación básica
-    if (!nombre || !instagram) {
+    // ✅ Validación correcta
+    if (!nombre || !instagram || !cliente_id) {
       return res.status(400).json({ error: 'Faltan datos obligatorios' });
     }
 
@@ -32,12 +32,12 @@ app.post('/lead', async (req, res) => {
         {
           nombre,
           instagram,
-          ultima_accion: mensaje || '',
+          notas: mensaje || '',
           origen: 'Instagram',
-          tipo: 'Orgánico',
+          tipo: 'Organico',
           estado: 'Nuevo',
           source: 'manychat',
-          cliente_id: 'cliente_1' // luego lo haremos dinámico
+          cliente_id: cliente_id // 🔥 ahora es dinámico
         }
       ]);
 
@@ -48,9 +48,10 @@ app.post('/lead', async (req, res) => {
 
     console.log('✅ Lead guardado:', data);
 
-    res.json({ ok: true });
+    res.json({ ok: true, data });
+
   } catch (err) {
-    console.error('❌ Error servidor:', err);
+    console.error('🔥 Error servidor:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
