@@ -11,7 +11,7 @@ app.use(express.json());
 // 🔑 Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY // service_role en Railway (correcto)
+  process.env.SUPABASE_KEY
 );
 
 // 🟢 Test
@@ -19,24 +19,36 @@ app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
-// 🔥 ENDPOINT LEADS
+// 🔥 ENDPOINT LEADS / EVENTOS
 app.post('/lead', async (req, res) => {
   try {
-    const { nombre, instagram, mensaje, origen } = req.body;
+    const {
+      nombre,
+      instagram,
+      mensaje,
+      origen,
+      tipo,
+      etiqueta
+    } = req.body;
 
-    // 🛑 Validación básica
+    // 🛑 Validación
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    // 🧠 Limpieza de nombre (evita placeholders rotos)
+    // 🧠 Limpieza nombre
     const nombreLimpio =
       nombre && !nombre.includes('{{') ? nombre : 'Sin nombre';
 
-    // 🧠 Etiqueta (Reel X)
-    const etiqueta = origen || '';
+    // 🧠 Defaults inteligentes
+    const tipoFinal = tipo || 'comentario'; // comentario o seguidor
+    const origenFinal = origen || 'Inbound';
+    const etiquetaFinal = etiqueta || '';
 
-    // 🧠 1. UPSERT (no duplica por instagram)
+    // 🧠 Tipo de lead (para columna "tipo" del CRM)
+    const tipoLead = tipoFinal === 'seguidor' ? 'Seguidor' : 'Organico';
+
+    // 🧠 1. UPSERT (no duplica)
     const { error: upsertError } = await supabase
       .from('leads')
       .upsert(
@@ -45,11 +57,10 @@ app.post('/lead', async (req, res) => {
           instagram,
           ultima_accion: mensaje || '',
 
-          // 🔥 Estructura correcta
-          origen: 'Inbound',
-          tipo: 'Organico',
-          estado: 'Nuevo',
-          etiqueta: etiqueta,
+          origen: origenFinal,
+          tipo: tipoLead,
+          estado: 'Primer Contacto',
+          etiqueta: etiquetaFinal,
 
           source: 'manychat',
           cliente_id: 'cliente_1'
@@ -64,23 +75,23 @@ app.post('/lead', async (req, res) => {
       return res.status(500).json({ error: upsertError.message });
     }
 
-    // 🧠 2. EVENTO (tracking para métricas)
+    // 🧠 2. EVENTO (clave para métricas)
     const { error: eventError } = await supabase
       .from('lead_events')
       .insert({
         instagram,
-        origen: etiqueta || 'desconocido',
-        tipo: 'comentario'
+        origen: etiquetaFinal || 'desconocido',
+        tipo: tipoFinal // 👈 ACA está la magia (seguidor vs comentario)
       });
 
     if (eventError) {
       console.error('❌ Error evento:', eventError);
-      // no frenamos el flujo
     }
 
     console.log('✅ Lead procesado:', {
       instagram,
-      etiqueta
+      tipo: tipoFinal,
+      etiqueta: etiquetaFinal
     });
 
     res.json({ ok: true });
