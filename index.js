@@ -8,30 +8,31 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// 🔑 Conexión a Supabase usando variables de Railway
+// 🔑 Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-// 🟢 Ruta de prueba
+// 🟢 Test
 app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
-// 🔥 Endpoint para guardar leads
+// 🔥 ENDPOINT LEADS (CORREGIDO)
 app.post('/lead', async (req, res) => {
   try {
-    const { nombre, instagram, mensaje } = req.body;
+    const { nombre, instagram, mensaje, origen } = req.body;
 
-    // Validación básica
+    // 🛑 Validación
     if (!nombre || !instagram) {
       return res.status(400).json({ error: 'Faltan datos obligatorios' });
     }
 
-    const { data, error } = await supabase
+    // 🧠 1. UPSERT (NO DUPLICA)
+    const { error: upsertError } = await supabase
       .from('leads')
-      .insert([
+      .upsert(
         {
           nombre,
           instagram,
@@ -40,16 +41,33 @@ app.post('/lead', async (req, res) => {
           tipo: 'Organico',
           estado: 'Nuevo',
           source: 'manychat',
-          cliente_id: 'cliente_1' // luego lo hacemos dinámico
+          cliente_id: 'cliente_1'
+        },
+        {
+          onConflict: 'instagram'
         }
-      ]);
+      );
 
-    if (error) {
-      console.error('❌ Error Supabase:', error);
-      return res.status(500).json({ error: error.message });
+    if (upsertError) {
+      console.error('❌ Error UPSERT:', upsertError);
+      return res.status(500).json({ error: upsertError.message });
     }
 
-    console.log('✅ Lead guardado:', data);
+    // 🧠 2. GUARDAR EVENTO (CLAVE PARA MÉTRICAS)
+    const { error: eventError } = await supabase
+      .from('lead_events')
+      .insert({
+        instagram,
+        origen: origen || 'desconocido',
+        tipo: 'comentario'
+      });
+
+    if (eventError) {
+      console.error('❌ Error evento:', eventError);
+      // NO frenamos el flujo por esto
+    }
+
+    console.log('✅ Lead procesado:', instagram);
 
     res.json({ ok: true });
   } catch (err) {
@@ -58,7 +76,7 @@ app.post('/lead', async (req, res) => {
   }
 });
 
-// 🚀 Puerto (Railway lo define automáticamente)
+// 🚀 Puerto
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
