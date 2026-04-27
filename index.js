@@ -11,7 +11,7 @@ app.use(express.json());
 // 🔑 Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
+  process.env.SUPABASE_KEY // service_role en Railway (correcto)
 );
 
 // 🟢 Test
@@ -19,27 +19,38 @@ app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
-// 🔥 ENDPOINT LEADS (CORREGIDO)
+// 🔥 ENDPOINT LEADS
 app.post('/lead', async (req, res) => {
   try {
     const { nombre, instagram, mensaje, origen } = req.body;
 
-    // 🛑 Validación
-    if (!nombre || !instagram) {
-      return res.status(400).json({ error: 'Faltan datos obligatorios' });
+    // 🛑 Validación básica
+    if (!instagram) {
+      return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    // 🧠 1. UPSERT (NO DUPLICA)
+    // 🧠 Limpieza de nombre (evita placeholders rotos)
+    const nombreLimpio =
+      nombre && !nombre.includes('{{') ? nombre : 'Sin nombre';
+
+    // 🧠 Etiqueta (Reel X)
+    const etiqueta = origen || '';
+
+    // 🧠 1. UPSERT (no duplica por instagram)
     const { error: upsertError } = await supabase
       .from('leads')
       .upsert(
         {
-          nombre,
+          nombre: nombreLimpio,
           instagram,
           ultima_accion: mensaje || '',
+
+          // 🔥 Estructura correcta
           origen: 'Inbound',
           tipo: 'Organico',
           estado: 'Nuevo',
+          etiqueta: etiqueta,
+
           source: 'manychat',
           cliente_id: 'cliente_1'
         },
@@ -53,21 +64,24 @@ app.post('/lead', async (req, res) => {
       return res.status(500).json({ error: upsertError.message });
     }
 
-    // 🧠 2. GUARDAR EVENTO (CLAVE PARA MÉTRICAS)
+    // 🧠 2. EVENTO (tracking para métricas)
     const { error: eventError } = await supabase
       .from('lead_events')
       .insert({
         instagram,
-        origen: origen || 'desconocido',
+        origen: etiqueta || 'desconocido',
         tipo: 'comentario'
       });
 
     if (eventError) {
       console.error('❌ Error evento:', eventError);
-      // NO frenamos el flujo por esto
+      // no frenamos el flujo
     }
 
-    console.log('✅ Lead procesado:', instagram);
+    console.log('✅ Lead procesado:', {
+      instagram,
+      etiqueta
+    });
 
     res.json({ ok: true });
   } catch (err) {
