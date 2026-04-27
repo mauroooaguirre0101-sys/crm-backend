@@ -5,9 +5,7 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
 // ✅ Middlewares
-app.use(cors({
-  origin: '*'
-}));
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 // 🔑 Supabase
@@ -23,7 +21,7 @@ app.get('/', (req, res) => {
 
 
 // ===============================
-// 🔥 GET CALLS (FALTABA ESTO)
+// 🔥 GET CALLS
 // ===============================
 app.get('/calls', async (req, res) => {
   try {
@@ -47,7 +45,183 @@ app.get('/calls', async (req, res) => {
 
 
 // ===============================
-// 🔥 ENDPOINT LEADS
+// 🔥 PRE-CALL (SETTER)
+// ===============================
+app.post('/call/precall', async (req, res) => {
+  try {
+    const {
+      nombre,
+      instagram,
+      whatsapp,
+      info_previa
+    } = req.body;
+
+    if (!instagram) {
+      return res.status(400).json({ error: 'Falta instagram' });
+    }
+
+    // 🔢 calcular número de llamada
+    const { data: existingCalls } = await supabase
+      .from('calls')
+      .select('id')
+      .eq('instagram', instagram);
+
+    const numero_llamada = (existingCalls?.length || 0) + 1;
+
+    const { error } = await supabase
+      .from('calls')
+      .insert({
+        nombre: nombre || 'Sin nombre',
+        instagram,
+        whatsapp: whatsapp || '',
+        info_previa: info_previa || '',
+        estado: 'Pendiente',
+        numero_llamada,
+        seguimientos: 0,
+        responde: false
+      });
+
+    if (error) {
+      console.error('❌ Error PRECALL:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    console.log('✅ Pre-call creada:', instagram);
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error('❌ Error servidor:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 UPDATE CALL (CLOSER)
+// ===============================
+app.patch('/call/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    let {
+      estado,
+      motivo_no_cierre,
+      seguimientos,
+      responde,
+      link_llamada,
+      reporte
+    } = req.body;
+
+    // 🔧 limpieza
+    motivo_no_cierre = motivo_no_cierre || '';
+    link_llamada = link_llamada || '';
+    reporte = reporte || '';
+
+    seguimientos = parseInt(seguimientos) || 0;
+
+    if (typeof responde === 'string') {
+      responde = responde.toLowerCase() === 'si';
+    } else {
+      responde = Boolean(responde);
+    }
+
+    const { data: callData, error: fetchError } = await supabase
+      .from('calls')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (fetchError) {
+      return res.status(500).json({ error: fetchError.message });
+    }
+
+    const { error } = await supabase
+      .from('calls')
+      .update({
+        estado,
+        motivo_no_cierre,
+        seguimientos,
+        responde,
+        link_llamada,
+        reporte
+      })
+      .eq('id', id);
+
+    if (error) {
+      console.error('❌ Error UPDATE CALL:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    // 🔁 SYNC LEAD
+    let nuevoEstadoLead = null;
+
+    switch (estado) {
+      case 'Cierre':
+        nuevoEstadoLead = 'Cerrado';
+        break;
+      case 'Seguimiento Post Call':
+        nuevoEstadoLead = 'Seguimiento Post Call';
+        break;
+      case 'Re agenda':
+        nuevoEstadoLead = 'Re agendado';
+        break;
+      case 'No Cierre':
+        nuevoEstadoLead = 'Perdido Post Call';
+        break;
+      case 'No asistió':
+        nuevoEstadoLead = 'No Show';
+        break;
+    }
+
+    if (nuevoEstadoLead && callData?.instagram) {
+      const { error: updateError } = await supabase
+        .from('leads')
+        .update({ estado: nuevoEstadoLead })
+        .eq('instagram', callData.instagram);
+
+      if (updateError) {
+        console.error('⚠️ Error actualizando lead:', updateError);
+      }
+    }
+
+    console.log('✅ Call actualizada:', id);
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error('❌ Error servidor:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 DELETE CALL
+// ===============================
+app.delete('/call/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('calls')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 ENDPOINT LEADS (SIN CAMBIOS)
 // ===============================
 app.post('/lead', async (req, res) => {
   try {
@@ -108,113 +282,6 @@ app.post('/lead', async (req, res) => {
     }
 
     console.log('✅ Lead procesado:', instagram);
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('❌ Error servidor:', err);
-    res.status(500).json({ error: 'Error interno del servidor' });
-  }
-});
-
-
-// ===============================
-// 🔥 CREATE CALL
-// ===============================
-app.post('/call', async (req, res) => {
-  try {
-    console.log('📥 DATA RECIBIDA:', req.body);
-
-    let {
-      nombre,
-      instagram,
-      whatsapp,
-      estado,
-      seguimientos,
-      responde,
-      link_llamada,
-      motivo_no_cierre
-    } = req.body;
-
-    if (!instagram || !estado) {
-      return res.status(400).json({ error: 'Faltan datos obligatorios' });
-    }
-
-    nombre = nombre || 'Sin nombre';
-    whatsapp = whatsapp || '';
-    link_llamada = link_llamada || '';
-    motivo_no_cierre = motivo_no_cierre || '';
-
-    // 🔥 FIX TIPOS
-    seguimientos = parseInt(seguimientos) || 0;
-
-    if (typeof responde === 'string') {
-      responde = responde.toLowerCase() === 'si';
-    } else {
-      responde = Boolean(responde);
-    }
-
-    console.log('📦 DATA LIMPIA:', {
-      nombre,
-      instagram,
-      whatsapp,
-      estado,
-      seguimientos,
-      responde,
-      link_llamada,
-      motivo_no_cierre
-    });
-
-    const { error: callError } = await supabase
-      .from('calls')
-      .insert({
-        nombre,
-        instagram,
-        whatsapp,
-        estado,
-        seguimientos,
-        responde,
-        link_llamada,
-        motivo_no_cierre
-      });
-
-    if (callError) {
-      console.error('❌ Error CALL:', callError);
-      return res.status(500).json({ error: callError.message });
-    }
-
-    // 🔁 SYNC LEADS
-    let nuevoEstadoLead = null;
-
-    switch (estado) {
-      case 'Cierre':
-        nuevoEstadoLead = 'Cerrado';
-        break;
-      case 'Seguimiento Post Call':
-        nuevoEstadoLead = 'Seguimiento Post Call';
-        break;
-      case 'Re agenda':
-        nuevoEstadoLead = 'Re agendado';
-        break;
-      case 'No Cierre':
-        nuevoEstadoLead = 'Perdido Post Call';
-        break;
-      case 'No asistió':
-        nuevoEstadoLead = 'No Show';
-        break;
-    }
-
-    if (nuevoEstadoLead) {
-      const { error: updateError } = await supabase
-        .from('leads')
-        .update({ estado: nuevoEstadoLead })
-        .eq('instagram', instagram);
-
-      if (updateError) {
-        console.error('⚠️ Error actualizando lead:', updateError);
-      }
-    }
-
-    console.log('✅ Call creada:', instagram);
 
     res.json({ ok: true });
 
