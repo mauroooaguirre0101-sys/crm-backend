@@ -15,6 +15,39 @@ const supabase = createClient(
 );
 
 // ===============================
+// 🔐 LOGIN (NUEVO)
+// ===============================
+app.post('/login', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Falta email' });
+    }
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    if (error || !user) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+
+    res.json({
+      email: user.email,
+      rol: user.rol,
+      cliente_id: user.cliente_id
+    });
+
+  } catch (err) {
+    console.error('❌ LOGIN ERROR:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+// ===============================
 // 🔐 MIDDLEWARE MULTI-CLIENTE
 // ===============================
 async function validateAccess(req, res, next) {
@@ -58,7 +91,7 @@ app.get('/', (req, res) => {
 
 
 // ===============================
-// 🔥 GET CALLS (FILTRADO)
+// 🔥 GET CALLS
 // ===============================
 app.get('/calls', validateAccess, async (req, res) => {
   try {
@@ -69,12 +102,14 @@ app.get('/calls', validateAccess, async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (error) {
+      console.error('❌ GET CALLS:', error);
       return res.status(500).json({ error: error.message });
     }
 
     res.json(data);
 
   } catch (err) {
+    console.error('❌ SERVER:', err);
     res.status(500).json({ error: 'Error servidor' });
   }
 });
@@ -85,22 +120,21 @@ app.get('/calls', validateAccess, async (req, res) => {
 // ===============================
 app.post('/call/precall', validateAccess, async (req, res) => {
   try {
-    const {
-      nombre,
-      instagram,
-      whatsapp,
-      info_previa
-    } = req.body;
+    const { nombre, instagram, whatsapp, info_previa } = req.body;
 
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    const { data: existingCalls } = await supabase
+    const { data: existingCalls, error: fetchError } = await supabase
       .from('calls')
       .select('id')
       .eq('instagram', instagram)
       .eq('cliente_id', req.cliente_id);
+
+    if (fetchError) {
+      return res.status(500).json({ error: fetchError.message });
+    }
 
     const numero_llamada = (existingCalls?.length || 0) + 1;
 
@@ -119,12 +153,14 @@ app.post('/call/precall', validateAccess, async (req, res) => {
       });
 
     if (error) {
+      console.error('❌ PRECALL:', error);
       return res.status(500).json({ error: error.message });
     }
 
     res.json({ ok: true });
 
   } catch (err) {
+    console.error('❌ SERVER:', err);
     res.status(500).json({ error: 'Error servidor' });
   }
 });
@@ -157,15 +193,14 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       responde = Boolean(responde);
     }
 
-    // 🔒 validar que la call pertenece al cliente
-    const { data: callData } = await supabase
+    const { data: callData, error: fetchError } = await supabase
       .from('calls')
       .select('*')
       .eq('id', id)
       .eq('cliente_id', req.cliente_id)
-      .single();
+      .maybeSingle();
 
-    if (!callData) {
+    if (fetchError || !callData) {
       return res.status(404).json({ error: 'Call no encontrada' });
     }
 
@@ -179,9 +214,11 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
         link_llamada,
         reporte
       })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
 
     if (error) {
+      console.error('❌ UPDATE CALL:', error);
       return res.status(500).json({ error: error.message });
     }
 
@@ -217,6 +254,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     res.json({ ok: true });
 
   } catch (err) {
+    console.error('❌ SERVER:', err);
     res.status(500).json({ error: 'Error servidor' });
   }
 });
@@ -236,12 +274,14 @@ app.delete('/call/:id', validateAccess, async (req, res) => {
       .eq('cliente_id', req.cliente_id);
 
     if (error) {
+      console.error('❌ DELETE CALL:', error);
       return res.status(500).json({ error: error.message });
     }
 
     res.json({ ok: true });
 
   } catch (err) {
+    console.error('❌ SERVER:', err);
     res.status(500).json({ error: 'Error servidor' });
   }
 });
@@ -252,14 +292,7 @@ app.delete('/call/:id', validateAccess, async (req, res) => {
 // ===============================
 app.post('/lead', validateAccess, async (req, res) => {
   try {
-    const {
-      nombre,
-      instagram,
-      mensaje,
-      origen,
-      tipo,
-      etiqueta
-    } = req.body;
+    const { nombre, instagram, mensaje, origen, tipo, etiqueta } = req.body;
 
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
@@ -292,6 +325,7 @@ app.post('/lead', validateAccess, async (req, res) => {
       );
 
     if (upsertError) {
+      console.error('❌ UPSERT:', upsertError);
       return res.status(500).json({ error: upsertError.message });
     }
 
@@ -307,6 +341,7 @@ app.post('/lead', validateAccess, async (req, res) => {
     res.json({ ok: true });
 
   } catch (err) {
+    console.error('❌ SERVER:', err);
     res.status(500).json({ error: 'Error servidor' });
   }
 });
