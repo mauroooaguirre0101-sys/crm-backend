@@ -5,7 +5,9 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
 // ✅ Middlewares
-app.use(cors());
+app.use(cors({
+  origin: '*'
+}));
 app.use(express.json());
 
 // 🔑 Supabase
@@ -21,7 +23,31 @@ app.get('/', (req, res) => {
 
 
 // ===============================
-// 🔥 ENDPOINT LEADS / EVENTOS
+// 🔥 GET CALLS (FALTABA ESTO)
+// ===============================
+app.get('/calls', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('calls')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ Error GET CALLS:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+
+  } catch (err) {
+    console.error('❌ Error servidor:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 ENDPOINT LEADS
 // ===============================
 app.post('/lead', async (req, res) => {
   try {
@@ -92,10 +118,12 @@ app.post('/lead', async (req, res) => {
 
 
 // ===============================
-// 🔥 NUEVO ENDPOINT CALLS
+// 🔥 CREATE CALL
 // ===============================
 app.post('/call', async (req, res) => {
   try {
+    console.log('📥 DATA RECIBIDA:', req.body);
+
     let {
       nombre,
       instagram,
@@ -107,18 +135,16 @@ app.post('/call', async (req, res) => {
       motivo_no_cierre
     } = req.body;
 
-    // 🛑 Validación básica
     if (!instagram || !estado) {
       return res.status(400).json({ error: 'Faltan datos obligatorios' });
     }
 
-    // 🔧 LIMPIEZA DE DATOS
     nombre = nombre || 'Sin nombre';
     whatsapp = whatsapp || '';
     link_llamada = link_llamada || '';
     motivo_no_cierre = motivo_no_cierre || '';
 
-    // 🔥 FIX TIPOS (CLAVE)
+    // 🔥 FIX TIPOS
     seguimientos = parseInt(seguimientos) || 0;
 
     if (typeof responde === 'string') {
@@ -127,9 +153,17 @@ app.post('/call', async (req, res) => {
       responde = Boolean(responde);
     }
 
-    // =========================
-    // 🧠 1. INSERT CALL
-    // =========================
+    console.log('📦 DATA LIMPIA:', {
+      nombre,
+      instagram,
+      whatsapp,
+      estado,
+      seguimientos,
+      responde,
+      link_llamada,
+      motivo_no_cierre
+    });
+
     const { error: callError } = await supabase
       .from('calls')
       .insert({
@@ -148,9 +182,7 @@ app.post('/call', async (req, res) => {
       return res.status(500).json({ error: callError.message });
     }
 
-    // =========================
-    // 🔁 2. SYNC CON LEADS
-    // =========================
+    // 🔁 SYNC LEADS
     let nuevoEstadoLead = null;
 
     switch (estado) {
@@ -182,7 +214,7 @@ app.post('/call', async (req, res) => {
       }
     }
 
-    console.log('✅ Call creada y sincronizada:', instagram);
+    console.log('✅ Call creada:', instagram);
 
     res.json({ ok: true });
 
