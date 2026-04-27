@@ -36,7 +36,7 @@ app.post('/login', async (req, res) => {
 
     res.json({
       email,
-      clientes // 🔥 clave
+      clientes
     });
 
   } catch (err) {
@@ -69,7 +69,7 @@ async function validateAccess(req, res, next) {
     }
 
     req.cliente_id = cliente_id;
-    req.user = data; // incluye role
+    req.user = data;
 
     next();
 
@@ -82,6 +82,31 @@ async function validateAccess(req, res, next) {
 // 🟢 Test
 app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
+});
+
+
+// ===============================
+// 🔥 GET LEADS (FIX CLAVE)
+// ===============================
+app.get('/leads', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ GET LEADS:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+
+  } catch (err) {
+    console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
 });
 
 
@@ -217,7 +242,6 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
 
-    // 🔁 sync lead
     let nuevoEstadoLead = null;
 
     switch (estado) {
