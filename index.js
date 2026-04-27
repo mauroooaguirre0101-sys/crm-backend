@@ -19,7 +19,10 @@ app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
+
+// ===============================
 // 🔥 ENDPOINT LEADS / EVENTOS
+// ===============================
 app.post('/lead', async (req, res) => {
   try {
     const {
@@ -31,24 +34,19 @@ app.post('/lead', async (req, res) => {
       etiqueta
     } = req.body;
 
-    // 🛑 Validación
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    // 🧠 Limpieza nombre
     const nombreLimpio =
       nombre && !nombre.includes('{{') ? nombre : 'Sin nombre';
 
-    // 🧠 Defaults inteligentes
-    const tipoFinal = tipo || 'comentario'; // comentario o seguidor
+    const tipoFinal = tipo || 'comentario';
     const origenFinal = origen || 'Inbound';
     const etiquetaFinal = etiqueta || '';
 
-    // 🧠 Tipo de lead (para columna "tipo" del CRM)
     const tipoLead = tipoFinal === 'seguidor' ? 'Seguidor' : 'Organico';
 
-    // 🧠 1. UPSERT (no duplica)
     const { error: upsertError } = await supabase
       .from('leads')
       .upsert(
@@ -56,18 +54,14 @@ app.post('/lead', async (req, res) => {
           nombre: nombreLimpio,
           instagram,
           ultima_accion: mensaje || '',
-
           origen: origenFinal,
           tipo: tipoLead,
           estado: 'Primer Contacto',
           etiqueta: etiquetaFinal,
-
           source: 'manychat',
           cliente_id: 'cliente_1'
         },
-        {
-          onConflict: 'instagram'
-        }
+        { onConflict: 'instagram' }
       );
 
     if (upsertError) {
@@ -75,24 +69,19 @@ app.post('/lead', async (req, res) => {
       return res.status(500).json({ error: upsertError.message });
     }
 
-    // 🧠 2. EVENTO (clave para métricas)
     const { error: eventError } = await supabase
       .from('lead_events')
       .insert({
         instagram,
         origen: etiquetaFinal || 'desconocido',
-        tipo: tipoFinal // 👈 ACA está la magia (seguidor vs comentario)
+        tipo: tipoFinal
       });
 
     if (eventError) {
       console.error('❌ Error evento:', eventError);
     }
 
-    console.log('✅ Lead procesado:', {
-      instagram,
-      tipo: tipoFinal,
-      etiqueta: etiquetaFinal
-    });
+    console.log('✅ Lead procesado:', instagram);
 
     res.json({ ok: true });
   } catch (err) {
@@ -100,6 +89,109 @@ app.post('/lead', async (req, res) => {
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
+
+
+// ===============================
+// 🔥 NUEVO ENDPOINT CALLS
+// ===============================
+app.post('/call', async (req, res) => {
+  try {
+    let {
+      nombre,
+      instagram,
+      whatsapp,
+      estado,
+      seguimientos,
+      responde,
+      link_llamada,
+      motivo_no_cierre
+    } = req.body;
+
+    // 🛑 Validación básica
+    if (!instagram || !estado) {
+      return res.status(400).json({ error: 'Faltan datos obligatorios' });
+    }
+
+    // 🔧 LIMPIEZA DE DATOS
+    nombre = nombre || 'Sin nombre';
+    whatsapp = whatsapp || '';
+    link_llamada = link_llamada || '';
+    motivo_no_cierre = motivo_no_cierre || '';
+
+    // 🔥 FIX TIPOS (CLAVE)
+    seguimientos = parseInt(seguimientos) || 0;
+
+    if (typeof responde === 'string') {
+      responde = responde.toLowerCase() === 'si';
+    } else {
+      responde = Boolean(responde);
+    }
+
+    // =========================
+    // 🧠 1. INSERT CALL
+    // =========================
+    const { error: callError } = await supabase
+      .from('calls')
+      .insert({
+        nombre,
+        instagram,
+        whatsapp,
+        estado,
+        seguimientos,
+        responde,
+        link_llamada,
+        motivo_no_cierre
+      });
+
+    if (callError) {
+      console.error('❌ Error CALL:', callError);
+      return res.status(500).json({ error: callError.message });
+    }
+
+    // =========================
+    // 🔁 2. SYNC CON LEADS
+    // =========================
+    let nuevoEstadoLead = null;
+
+    switch (estado) {
+      case 'Cierre':
+        nuevoEstadoLead = 'Cerrado';
+        break;
+      case 'Seguimiento Post Call':
+        nuevoEstadoLead = 'Seguimiento Post Call';
+        break;
+      case 'Re agenda':
+        nuevoEstadoLead = 'Re agendado';
+        break;
+      case 'No Cierre':
+        nuevoEstadoLead = 'Perdido Post Call';
+        break;
+      case 'No asistió':
+        nuevoEstadoLead = 'No Show';
+        break;
+    }
+
+    if (nuevoEstadoLead) {
+      const { error: updateError } = await supabase
+        .from('leads')
+        .update({ estado: nuevoEstadoLead })
+        .eq('instagram', instagram);
+
+      if (updateError) {
+        console.error('⚠️ Error actualizando lead:', updateError);
+      }
+    }
+
+    console.log('✅ Call creada y sincronizada:', instagram);
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error('❌ Error servidor:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 
 // 🚀 Puerto
 const PORT = process.env.PORT || 3000;
