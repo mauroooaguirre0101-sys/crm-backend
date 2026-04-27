@@ -4,50 +4,99 @@ const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
-// ✅ Middlewares
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// 🔑 Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
-// 🟢 Test
+// ===============================
+// 🧠 MIDDLEWARE VALIDACIÓN CLIENTE
+// ===============================
+async function validateAccess(req, res, next) {
+  const cliente_id = req.headers['x-cliente-id'];
+  const user_email = req.headers['x-user-email'];
+
+  if (!cliente_id || !user_email) {
+    return res.status(400).json({ error: 'Faltan headers' });
+  }
+
+  const { data, error } = await supabase
+    .from('user_clientes')
+    .select('*')
+    .eq('user_email', user_email)
+    .eq('cliente_id', cliente_id)
+    .single();
+
+  if (error || !data) {
+    return res.status(403).json({ error: 'Sin acceso a este cliente' });
+  }
+
+  req.cliente_id = cliente_id;
+  req.user_email = user_email;
+  req.user_role = data.role;
+
+  next();
+}
+
+// ===============================
+// 🟢 TEST
+// ===============================
 app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
-
 // ===============================
-// 🔥 GET CALLS
+// 🔥 USER CLIENTES
 // ===============================
-app.get('/calls', async (req, res) => {
+app.get('/user-clientes', async (req, res) => {
   try {
+    const { email } = req.query;
+
     const { data, error } = await supabase
-      .from('calls')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .from('user_clientes')
+      .select('cliente_id, role')
+      .eq('user_email', email);
 
     if (error) {
-      console.error('❌ Error GET CALLS:', error);
       return res.status(500).json({ error: error.message });
     }
 
     res.json(data);
 
   } catch (err) {
-    console.error('❌ Error servidor:', err);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error servidor' });
   }
 });
 
+// ===============================
+// 🔥 GET CALLS
+// ===============================
+app.get('/calls', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('calls')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+
+  } catch (err) {
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
 
 // ===============================
 // 🔥 PRE-CALL (SETTER)
 // ===============================
-app.post('/call/precall', async (req, res) => {
+app.post('/call/precall', validateAccess, async (req, res) => {
   try {
     const {
       nombre,
@@ -60,11 +109,11 @@ app.post('/call/precall', async (req, res) => {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    // 🔢 calcular número de llamada
     const { data: existingCalls } = await supabase
       .from('calls')
       .select('id')
-      .eq('instagram', instagram);
+      .eq('instagram', instagram)
+      .eq('cliente_id', req.cliente_id);
 
     const numero_llamada = (existingCalls?.length || 0) + 1;
 
@@ -78,29 +127,25 @@ app.post('/call/precall', async (req, res) => {
         estado: 'Pendiente',
         numero_llamada,
         seguimientos: 0,
-        responde: false
+        responde: false,
+        cliente_id: req.cliente_id
       });
 
     if (error) {
-      console.error('❌ Error PRECALL:', error);
       return res.status(500).json({ error: error.message });
     }
-
-    console.log('✅ Pre-call creada:', instagram);
 
     res.json({ ok: true });
 
   } catch (err) {
-    console.error('❌ Error servidor:', err);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error servidor' });
   }
 });
-
 
 // ===============================
 // 🔥 UPDATE CALL (CLOSER)
 // ===============================
-app.patch('/call/:id', async (req, res) => {
+app.patch('/call/:id', validateAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -113,7 +158,6 @@ app.patch('/call/:id', async (req, res) => {
       reporte
     } = req.body;
 
-    // 🔧 limpieza
     motivo_no_cierre = motivo_no_cierre || '';
     link_llamada = link_llamada || '';
     reporte = reporte || '';
@@ -126,14 +170,15 @@ app.patch('/call/:id', async (req, res) => {
       responde = Boolean(responde);
     }
 
-    const { data: callData, error: fetchError } = await supabase
+    const { data: callData } = await supabase
       .from('calls')
       .select('*')
       .eq('id', id)
+      .eq('cliente_id', req.cliente_id)
       .single();
 
-    if (fetchError) {
-      return res.status(500).json({ error: fetchError.message });
+    if (!callData) {
+      return res.status(404).json({ error: 'Call no encontrada' });
     }
 
     const { error } = await supabase
@@ -146,18 +191,18 @@ app.patch('/call/:id', async (req, res) => {
         link_llamada,
         reporte
       })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
 
     if (error) {
-      console.error('❌ Error UPDATE CALL:', error);
       return res.status(500).json({ error: error.message });
     }
 
-    // 🔁 SYNC LEAD
     let nuevoEstadoLead = null;
 
     switch (estado) {
       case 'Cierre':
+      case 'Cierre PIF':
         nuevoEstadoLead = 'Cerrado';
         break;
       case 'Seguimiento Post Call':
@@ -174,39 +219,33 @@ app.patch('/call/:id', async (req, res) => {
         break;
     }
 
-    if (nuevoEstadoLead && callData?.instagram) {
-      const { error: updateError } = await supabase
+    if (nuevoEstadoLead && callData.instagram) {
+      await supabase
         .from('leads')
         .update({ estado: nuevoEstadoLead })
-        .eq('instagram', callData.instagram);
-
-      if (updateError) {
-        console.error('⚠️ Error actualizando lead:', updateError);
-      }
+        .eq('instagram', callData.instagram)
+        .eq('cliente_id', req.cliente_id);
     }
-
-    console.log('✅ Call actualizada:', id);
 
     res.json({ ok: true });
 
   } catch (err) {
-    console.error('❌ Error servidor:', err);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error servidor' });
   }
 });
-
 
 // ===============================
 // 🔥 DELETE CALL
 // ===============================
-app.delete('/call/:id', async (req, res) => {
+app.delete('/call/:id', validateAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
     const { error } = await supabase
       .from('calls')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
 
     if (error) {
       return res.status(500).json({ error: error.message });
@@ -219,11 +258,10 @@ app.delete('/call/:id', async (req, res) => {
   }
 });
 
-
 // ===============================
-// 🔥 ENDPOINT LEADS (SIN CAMBIOS)
+// 🔥 LEADS
 // ===============================
-app.post('/lead', async (req, res) => {
+app.post('/lead', validateAccess, async (req, res) => {
   try {
     const {
       nombre,
@@ -238,61 +276,43 @@ app.post('/lead', async (req, res) => {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    const nombreLimpio =
-      nombre && !nombre.includes('{{') ? nombre : 'Sin nombre';
+    const tipoLead = tipo === 'seguidor' ? 'Seguidor' : 'Organico';
 
-    const tipoFinal = tipo || 'comentario';
-    const origenFinal = origen || 'Inbound';
-    const etiquetaFinal = etiqueta || '';
-
-    const tipoLead = tipoFinal === 'seguidor' ? 'Seguidor' : 'Organico';
-
-    const { error: upsertError } = await supabase
+    const { error } = await supabase
       .from('leads')
-      .upsert(
-        {
-          nombre: nombreLimpio,
-          instagram,
-          ultima_accion: mensaje || '',
-          origen: origenFinal,
-          tipo: tipoLead,
-          estado: 'Primer Contacto',
-          etiqueta: etiquetaFinal,
-          source: 'manychat',
-          cliente_id: 'cliente_1'
-        },
-        { onConflict: 'instagram' }
-      );
+      .upsert({
+        nombre: nombre || 'Sin nombre',
+        instagram,
+        ultima_accion: mensaje || '',
+        origen: origen || 'Inbound',
+        tipo: tipoLead,
+        estado: 'Primer Contacto',
+        etiqueta: etiqueta || '',
+        source: 'manychat',
+        cliente_id: req.cliente_id
+      }, { onConflict: 'instagram' });
 
-    if (upsertError) {
-      console.error('❌ Error UPSERT:', upsertError);
-      return res.status(500).json({ error: upsertError.message });
+    if (error) {
+      return res.status(500).json({ error: error.message });
     }
 
-    const { error: eventError } = await supabase
+    await supabase
       .from('lead_events')
       .insert({
         instagram,
-        origen: etiquetaFinal || 'desconocido',
-        tipo: tipoFinal
+        origen: etiqueta || 'desconocido',
+        tipo: tipo || 'comentario',
+        cliente_id: req.cliente_id
       });
-
-    if (eventError) {
-      console.error('❌ Error evento:', eventError);
-    }
-
-    console.log('✅ Lead procesado:', instagram);
 
     res.json({ ok: true });
 
   } catch (err) {
-    console.error('❌ Error servidor:', err);
-    res.status(500).json({ error: 'Error interno del servidor' });
+    res.status(500).json({ error: 'Error servidor' });
   }
 });
 
-
-// 🚀 Puerto
+// ===============================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
