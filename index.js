@@ -4,75 +4,61 @@ const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
+// ✅ Middlewares
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
+// 🔑 Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
 
 // ===============================
-// 🧠 MIDDLEWARE VALIDACIÓN CLIENTE
+// 🔐 MIDDLEWARE MULTI-CLIENTE
 // ===============================
 async function validateAccess(req, res, next) {
-  const cliente_id = req.headers['x-cliente-id'];
-  const user_email = req.headers['x-user-email'];
+  try {
+    const cliente_id = req.headers['x-cliente-id'];
+    const email = req.headers['x-user-email'];
 
-  if (!cliente_id || !user_email) {
-    return res.status(400).json({ error: 'Faltan headers' });
+    if (!cliente_id || !email) {
+      return res.status(400).json({ error: 'Faltan headers' });
+    }
+
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    if (error || !user) {
+      return res.status(403).json({ error: 'Usuario no válido' });
+    }
+
+    if (user.cliente_id !== cliente_id) {
+      return res.status(403).json({ error: 'Sin acceso a este cliente' });
+    }
+
+    req.cliente_id = cliente_id;
+    req.user = user;
+
+    next();
+
+  } catch (err) {
+    console.error('❌ Error auth:', err);
+    res.status(500).json({ error: 'Error de autenticación' });
   }
-
-  const { data, error } = await supabase
-    .from('user_clientes')
-    .select('*')
-    .eq('user_email', user_email)
-    .eq('cliente_id', cliente_id)
-    .single();
-
-  if (error || !data) {
-    return res.status(403).json({ error: 'Sin acceso a este cliente' });
-  }
-
-  req.cliente_id = cliente_id;
-  req.user_email = user_email;
-  req.user_role = data.role;
-
-  next();
 }
 
-// ===============================
-// 🟢 TEST
-// ===============================
+// 🟢 Test
 app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
 });
 
-// ===============================
-// 🔥 USER CLIENTES
-// ===============================
-app.get('/user-clientes', async (req, res) => {
-  try {
-    const { email } = req.query;
-
-    const { data, error } = await supabase
-      .from('user_clientes')
-      .select('cliente_id, role')
-      .eq('user_email', email);
-
-    if (error) {
-      return res.status(500).json({ error: error.message });
-    }
-
-    res.json(data);
-
-  } catch (err) {
-    res.status(500).json({ error: 'Error servidor' });
-  }
-});
 
 // ===============================
-// 🔥 GET CALLS
+// 🔥 GET CALLS (FILTRADO)
 // ===============================
 app.get('/calls', validateAccess, async (req, res) => {
   try {
@@ -92,6 +78,7 @@ app.get('/calls', validateAccess, async (req, res) => {
     res.status(500).json({ error: 'Error servidor' });
   }
 });
+
 
 // ===============================
 // 🔥 PRE-CALL (SETTER)
@@ -142,6 +129,7 @@ app.post('/call/precall', validateAccess, async (req, res) => {
   }
 });
 
+
 // ===============================
 // 🔥 UPDATE CALL (CLOSER)
 // ===============================
@@ -161,7 +149,6 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     motivo_no_cierre = motivo_no_cierre || '';
     link_llamada = link_llamada || '';
     reporte = reporte || '';
-
     seguimientos = parseInt(seguimientos) || 0;
 
     if (typeof responde === 'string') {
@@ -170,6 +157,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       responde = Boolean(responde);
     }
 
+    // 🔒 validar que la call pertenece al cliente
     const { data: callData } = await supabase
       .from('calls')
       .select('*')
@@ -191,18 +179,17 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
         link_llamada,
         reporte
       })
-      .eq('id', id)
-      .eq('cliente_id', req.cliente_id);
+      .eq('id', id);
 
     if (error) {
       return res.status(500).json({ error: error.message });
     }
 
+    // 🔁 sync lead
     let nuevoEstadoLead = null;
 
     switch (estado) {
       case 'Cierre':
-      case 'Cierre PIF':
         nuevoEstadoLead = 'Cerrado';
         break;
       case 'Seguimiento Post Call':
@@ -219,7 +206,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
         break;
     }
 
-    if (nuevoEstadoLead && callData.instagram) {
+    if (nuevoEstadoLead) {
       await supabase
         .from('leads')
         .update({ estado: nuevoEstadoLead })
@@ -233,6 +220,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     res.status(500).json({ error: 'Error servidor' });
   }
 });
+
 
 // ===============================
 // 🔥 DELETE CALL
@@ -258,8 +246,9 @@ app.delete('/call/:id', validateAccess, async (req, res) => {
   }
 });
 
+
 // ===============================
-// 🔥 LEADS
+// 🔥 CREATE LEAD
 // ===============================
 app.post('/lead', validateAccess, async (req, res) => {
   try {
@@ -276,32 +265,42 @@ app.post('/lead', validateAccess, async (req, res) => {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    const tipoLead = tipo === 'seguidor' ? 'Seguidor' : 'Organico';
+    const nombreLimpio =
+      nombre && !nombre.includes('{{') ? nombre : 'Sin nombre';
 
-    const { error } = await supabase
+    const tipoFinal = tipo || 'comentario';
+    const origenFinal = origen || 'Inbound';
+    const etiquetaFinal = etiqueta || '';
+
+    const tipoLead = tipoFinal === 'seguidor' ? 'Seguidor' : 'Organico';
+
+    const { error: upsertError } = await supabase
       .from('leads')
-      .upsert({
-        nombre: nombre || 'Sin nombre',
-        instagram,
-        ultima_accion: mensaje || '',
-        origen: origen || 'Inbound',
-        tipo: tipoLead,
-        estado: 'Primer Contacto',
-        etiqueta: etiqueta || '',
-        source: 'manychat',
-        cliente_id: req.cliente_id
-      }, { onConflict: 'instagram' });
+      .upsert(
+        {
+          nombre: nombreLimpio,
+          instagram,
+          ultima_accion: mensaje || '',
+          origen: origenFinal,
+          tipo: tipoLead,
+          estado: 'Primer Contacto',
+          etiqueta: etiquetaFinal,
+          source: 'manychat',
+          cliente_id: req.cliente_id
+        },
+        { onConflict: 'instagram' }
+      );
 
-    if (error) {
-      return res.status(500).json({ error: error.message });
+    if (upsertError) {
+      return res.status(500).json({ error: upsertError.message });
     }
 
     await supabase
       .from('lead_events')
       .insert({
         instagram,
-        origen: etiqueta || 'desconocido',
-        tipo: tipo || 'comentario',
+        origen: etiquetaFinal || 'desconocido',
+        tipo: tipoFinal,
         cliente_id: req.cliente_id
       });
 
@@ -312,7 +311,8 @@ app.post('/lead', validateAccess, async (req, res) => {
   }
 });
 
-// ===============================
+
+// 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
