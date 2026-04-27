@@ -15,7 +15,7 @@ const supabase = createClient(
 );
 
 // ===============================
-// 🔐 LOGIN (NUEVO)
+// 🔐 LOGIN MULTI-CLIENTE
 // ===============================
 app.post('/login', async (req, res) => {
   try {
@@ -25,20 +25,18 @@ app.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Falta email' });
     }
 
-    const { data: user, error } = await supabase
-      .from('users')
+    const { data: clientes, error } = await supabase
+      .from('user_clientes')
       .select('*')
-      .eq('email', email)
-      .single();
+      .eq('user_email', email);
 
-    if (error || !user) {
-      return res.status(404).json({ error: 'Usuario no encontrado' });
+    if (error || !clientes || clientes.length === 0) {
+      return res.status(403).json({ error: 'Usuario sin clientes asignados' });
     }
 
     res.json({
-      email: user.email,
-      rol: user.rol,
-      cliente_id: user.cliente_id
+      email,
+      clientes // 🔥 clave
     });
 
   } catch (err) {
@@ -48,7 +46,7 @@ app.post('/login', async (req, res) => {
 });
 
 // ===============================
-// 🔐 MIDDLEWARE MULTI-CLIENTE
+// 🔐 MIDDLEWARE MULTI-CLIENTE REAL
 // ===============================
 async function validateAccess(req, res, next) {
   try {
@@ -59,22 +57,19 @@ async function validateAccess(req, res, next) {
       return res.status(400).json({ error: 'Faltan headers' });
     }
 
-    const { data: user, error } = await supabase
-      .from('users')
+    const { data, error } = await supabase
+      .from('user_clientes')
       .select('*')
-      .eq('email', email)
+      .eq('user_email', email)
+      .eq('cliente_id', cliente_id)
       .single();
 
-    if (error || !user) {
-      return res.status(403).json({ error: 'Usuario no válido' });
-    }
-
-    if (user.cliente_id !== cliente_id) {
+    if (error || !data) {
       return res.status(403).json({ error: 'Sin acceso a este cliente' });
     }
 
     req.cliente_id = cliente_id;
-    req.user = user;
+    req.user = data; // incluye role
 
     next();
 
@@ -193,14 +188,14 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       responde = Boolean(responde);
     }
 
-    const { data: callData, error: fetchError } = await supabase
+    const { data: callData } = await supabase
       .from('calls')
       .select('*')
       .eq('id', id)
       .eq('cliente_id', req.cliente_id)
       .maybeSingle();
 
-    if (fetchError || !callData) {
+    if (!callData) {
       return res.status(404).json({ error: 'Call no encontrada' });
     }
 
