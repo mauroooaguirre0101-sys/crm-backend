@@ -111,7 +111,7 @@ app.get('/leads', validateAccess, async (req, res) => {
 
 
 // ===============================
-// 🔥 UPDATE LEAD (FIX 404)
+// 🔥 UPDATE LEAD
 // ===============================
 app.patch('/leads/:id', validateAccess, async (req, res) => {
   try {
@@ -119,7 +119,6 @@ app.patch('/leads/:id', validateAccess, async (req, res) => {
 
     const updates = { ...req.body };
 
-    // 🔒 proteger campos sensibles
     delete updates.id;
     delete updates.cliente_id;
     delete updates.created_at;
@@ -282,6 +281,9 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       case 'Cierre':
         nuevoEstadoLead = 'Cerrado';
         break;
+      case 'Cierre PIF':
+        nuevoEstadoLead = 'Cerrado';
+        break;
       case 'Seguimiento Post Call':
         nuevoEstadoLead = 'Seguimiento Post Call';
         break;
@@ -390,6 +392,159 @@ app.post('/lead', validateAccess, async (req, res) => {
         tipo: tipoFinal,
         cliente_id: req.cliente_id
       });
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 GET CLIENTES
+// ===============================
+app.get('/clientes', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('clientes')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('❌ GET CLIENTES:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+
+  } catch (err) {
+    console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 CREATE CLIENTE
+// ===============================
+app.post('/clientes', validateAccess, async (req, res) => {
+  try {
+    const {
+      nombre,
+      instagram,
+      inicio,
+      fin,
+      tipo_pago,
+      cash_collected,
+      comprobante,
+      estado
+    } = req.body;
+
+    if (!nombre) {
+      return res.status(400).json({ error: 'nombre es obligatorio' });
+    }
+
+    // Evitar duplicado por instagram
+    if (instagram) {
+      const { data: existe } = await supabase
+        .from('clientes')
+        .select('id')
+        .eq('cliente_id', req.cliente_id)
+        .eq('instagram', instagram.toLowerCase())
+        .maybeSingle();
+
+      if (existe) {
+        return res.status(409).json({ error: 'Ya existe cliente con ese instagram' });
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('clientes')
+      .insert([{
+        cliente_id: req.cliente_id,
+        nombre,
+        instagram: instagram ? instagram.toLowerCase() : null,
+        inicio: inicio || null,
+        fin: fin || null,
+        tipo_pago: tipo_pago || 'Contado',
+        cash_collected: cash_collected || 0,
+        comprobante: comprobante || '',
+        estado: estado || 'Al día'
+      }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('❌ CREATE CLIENTE:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json(data);
+
+  } catch (err) {
+    console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 UPDATE CLIENTE
+// ===============================
+app.patch('/clientes/:id', validateAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const updates = { ...req.body };
+
+    delete updates.id;
+    delete updates.cliente_id;
+    delete updates.created_at;
+
+    if (updates.instagram) {
+      updates.instagram = updates.instagram.toLowerCase();
+    }
+
+    const { error } = await supabase
+      .from('clientes')
+      .update(updates)
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
+
+    if (error) {
+      console.error('❌ UPDATE CLIENTE:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 DELETE CLIENTE
+// ===============================
+app.delete('/clientes/:id', validateAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('clientes')
+      .delete()
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
+
+    if (error) {
+      console.error('❌ DELETE CLIENTE:', error);
+      return res.status(500).json({ error: error.message });
+    }
 
     res.json({ ok: true });
 
