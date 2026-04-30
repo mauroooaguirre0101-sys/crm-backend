@@ -79,6 +79,27 @@ async function validateAccess(req, res, next) {
   }
 }
 
+// ===============================
+// 🔐 HELPER: checkAccess (función pura para rutas que no usan middleware)
+// ===============================
+async function checkAccess(req) {
+  const cliente_id = req.headers['x-cliente-id'];
+  const email      = req.headers['x-user-email'];
+  if (!cliente_id || !email) {
+    return { ok: false, status: 400, error: 'Faltan headers x-cliente-id / x-user-email' };
+  }
+  const { data, error } = await supabase
+    .from('user_clientes')
+    .select('*')
+    .eq('user_email', email)
+    .eq('cliente_id', cliente_id)
+    .single();
+  if (error || !data) {
+    return { ok: false, status: 403, error: 'Sin acceso a este cliente' };
+  }
+  return { ok: true, cliente_id, user: data };
+}
+
 // 🟢 Test
 app.get('/', (req, res) => {
   res.send('Backend funcionando 🚀');
@@ -551,6 +572,112 @@ app.delete('/clientes/:id', validateAccess, async (req, res) => {
   } catch (err) {
     console.error('❌ SERVER:', err);
     res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 GET /metrics?range=day|week|month
+// ===============================
+app.get('/metrics', async (req, res) => {
+  try {
+    // ── Auth ──
+    const access = await checkAccess(req);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+    const cliente_id = access.cliente_id;
+
+    // ── Validación de range ──
+    const { range = 'month' } = req.query;
+    if (!['day', 'week', 'month'].includes(range)) {
+      return res.status(400).json({ error: "range inválido. Usar: 'day', 'week' o 'month'" });
+    }
+
+    // ── Fechas en UTC puro ──
+    const now = new Date();
+    const todayUTC = new Date(Date.UTC(
+      now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()
+    ));
+
+    let curStart, prevStart, prevEnd;
+
+    if (range === 'day') {
+      curStart  = new Date(todayUTC);
+      prevEnd   = new Date(curStart);
+      prevStart = new Date(curStart); prevStart.setUTCDate(prevStart.getUTCDate() - 1);
+    } else if (range === 'week') {
+      curStart  = new Date(todayUTC); curStart.setUTCDate(todayUTC.getUTCDate() - 7);
+      prevEnd   = new Date(curStart);
+      prevStart = new Date(curStart); prevStart.setUTCDate(prevStart.getUTCDate() - 7);
+    } else {
+      curStart  = new Date(todayUTC); curStart.setUTCDate(todayUTC.getUTCDate() - 30);
+      prevEnd   = new Date(curStart);
+      prevStart = new Date(curStart); prevStart.setUTCDate(prevStart.getUTCDate() - 30);
+    }
+
+    const curStartISO  = curStart.toISOString();
+    const prevStartISO = prevStart.toISOString();
+    const prevEndISO   = prevEnd.toISOString();
+
+    // ── Queries en paralelo ──
+    const [
+      leadsNowRes,
+      leadsPrevRes,
+      callsNowRes,
+      callsPrevRes,
+      clientesNowRes,
+      clientesPrevRes,
+    ] = await Promise.all([
+      supabase.from('leads').select('id,estado').eq('cliente_id', cliente_id).gte('created_at', curStartISO),
+      supabase.from('leads').select('id,estado').eq('cliente_id', cliente_id).gte('created_at', prevStartISO).lt('created_at', prevEndISO),
+      supabase.from('calls').select('id,estado').eq('cliente_id', cliente_id).gte('created_at', curStartISO),
+      supabase.from('calls').select('id,estado').eq('cliente_id', cliente_id).gte('created_at', prevStartISO).lt('created_at', prevEndISO),
+      supabase.from('clientes').select('id,cash_collected').eq('cliente_id', cliente_id).gte('created_at', curStartISO),
+      supabase.from('clientes').select('id,cash_collected').eq('cliente_id', cliente_id).gte('created_at', prevStartISO).lt('created_at', prevEndISO),
+    ]);
+
+    // ── Validación individual por query ──
+    const queries = {
+      'leads (actual)':      leadsNowRes,
+      'leads (anterior)':    leadsPrevRes,
+      'calls (actual)':      callsNowRes,
+      'calls (anterior)':    callsPrevRes,
+      'clientes (actual)':   clientesNowRes,
+      'clientes (anterior)': clientesPrevRes,
+    };
+    for (const [name, result] of Object.entries(queries)) {
+      if (result.error) {
+        console.error(`❌ /metrics query "${name}":`, result.error);
+        return res.status(500).json({ error: `Error en query "${name}": ${result.error.message}` });
+      }
+    }
+
+    // ── Cálculo de métricas ──
+    const calc = (leads, calls, clientes) => {
+      const l  = leads    || [];
+      const c  = calls    || [];
+      const cl = clientes || [];
+
+      const totalLeads     = l.length;
+      const closes         = l.filter(x => x.estado === 'Cerrado' || x.estado === 'Seña').length;
+      const senas          = l.filter(x => x.estado === 'Seña').length;
+      const totalCalls     = c.length;
+      const shows          = c.filter(x => x.estado !== 'No asistió' && x.estado !== 'Re agenda').length;
+      const facturacion    = cl.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0);
+      const cash_collected = facturacion;
+      const aov            = closes > 0 ? Math.round(facturacion / closes) : 0;
+
+      return { leads: totalLeads, calls: totalCalls, shows, closes, senas, facturacion, cash_collected, aov };
+    };
+
+    res.json({
+      range,
+      current:  calc(leadsNowRes.data,  callsNowRes.data,  clientesNowRes.data),
+      previous: calc(leadsPrevRes.data, callsPrevRes.data, clientesPrevRes.data),
+    });
+
+  } catch (err) {
+    console.error('❌ GET /metrics:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
