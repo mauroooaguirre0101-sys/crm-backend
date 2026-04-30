@@ -86,7 +86,7 @@ app.get('/', (req, res) => {
 
 
 // ===============================
-// 🔥 GET LEADS (FIX CLAVE)
+// 🔥 GET LEADS
 // ===============================
 app.get('/leads', validateAccess, async (req, res) => {
   try {
@@ -102,6 +102,40 @@ app.get('/leads', validateAccess, async (req, res) => {
     }
 
     res.json(data);
+
+  } catch (err) {
+    console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// 🔥 UPDATE LEAD (FIX 404)
+// ===============================
+app.patch('/leads/:id', validateAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const updates = { ...req.body };
+
+    // 🔒 proteger campos sensibles
+    delete updates.id;
+    delete updates.cliente_id;
+    delete updates.created_at;
+
+    const { error } = await supabase
+      .from('leads')
+      .update(updates)
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
+
+    if (error) {
+      console.error('❌ UPDATE LEAD:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ ok: true });
 
   } catch (err) {
     console.error('❌ SERVER:', err);
@@ -136,7 +170,7 @@ app.get('/calls', validateAccess, async (req, res) => {
 
 
 // ===============================
-// 🔥 PRE-CALL (SETTER)
+// 🔥 PRE-CALL
 // ===============================
 app.post('/call/precall', validateAccess, async (req, res) => {
   try {
@@ -187,7 +221,7 @@ app.post('/call/precall', validateAccess, async (req, res) => {
 
 
 // ===============================
-// 🔥 UPDATE CALL (CLOSER)
+// 🔥 UPDATE CALL
 // ===============================
 app.patch('/call/:id', validateAccess, async (req, res) => {
   try {
