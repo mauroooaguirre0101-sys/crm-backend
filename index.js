@@ -165,6 +165,35 @@ app.patch('/leads/:id', validateAccess, async (req, res) => {
 
 
 // ===============================
+// 🔥 DELETE LEAD
+// ===============================
+app.delete('/leads/:id', validateAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    console.log('[DELETE LEAD] id:', id, 'cliente_id:', req.cliente_id);
+
+    const { error } = await supabase
+      .from('leads')
+      .delete()
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
+
+    if (error) {
+      console.error('❌ DELETE LEAD:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error('❌ SERVER DELETE LEAD:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
 // 🔥 GET CALLS
 // ===============================
 app.get('/calls', validateAccess, async (req, res) => {
