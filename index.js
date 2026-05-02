@@ -711,6 +711,141 @@ app.get('/metrics', async (req, res) => {
 });
 
 
+// ===============================
+// 🔥 INGRESOS
+// ===============================
+app.get('/ingresos', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('ingresos').select('*')
+      .eq('cliente_id', req.cliente_id).order('fecha', { ascending: false, nullsFirst: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data.map(r => ({
+      id: r.id, concepto: r.concepto, tipo: r.tipo, tipoPago: r.tipo_pago,
+      nombre: r.nombre, usd: r.usd || 0, ars: r.ars || 0, eur: r.eur || 0,
+      fecha: r.fecha, origen: r.origen, instagram: r.instagram,
+      cuotaId: r.cuota_id, clienteId: r.ref_cliente_id, clienteNombre: r.cliente_nombre,
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/ingresos', validateAccess, async (req, res) => {
+  try {
+    const b = req.body;
+    const { data, error } = await supabase.from('ingresos').insert([{
+      cliente_id: req.cliente_id,
+      concepto: b.concepto || null, tipo: b.tipo || null,
+      tipo_pago: b.tipoPago || b.tipo_pago || null, nombre: b.nombre || null,
+      usd: +b.usd || 0, ars: +b.ars || 0, eur: +b.eur || 0, fecha: b.fecha || null,
+      origen: b.origen || null,
+      instagram: b.instagram ? b.instagram.toLowerCase() : null,
+      cuota_id: b.cuotaId || b.cuota_id || null,
+      ref_cliente_id: b.clienteId || b.ref_cliente_id || null,
+      cliente_nombre: b.clienteNombre || b.cliente_nombre || null,
+    }]).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...b, id: data.id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/ingresos/:id', validateAccess, async (req, res) => {
+  try {
+    const b = req.body;
+    const updates = {};
+    if (b.nombre !== undefined) updates.nombre = b.nombre;
+    if (b.usd !== undefined) updates.usd = +b.usd;
+    const { error } = await supabase.from('ingresos').update(updates)
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/ingresos/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('ingresos').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 🔥 EGRESOS
+// ===============================
+app.get('/egresos', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('egresos').select('*')
+      .eq('cliente_id', req.cliente_id).order('fecha', { ascending: false, nullsFirst: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/egresos', validateAccess, async (req, res) => {
+  try {
+    const b = req.body;
+    const { data, error } = await supabase.from('egresos').insert([{
+      cliente_id: req.cliente_id,
+      concepto: b.concepto || null, tipo: b.tipo || null, cat: b.cat || null,
+      usd: +b.usd || 0, ars: +b.ars || 0, eur: +b.eur || 0, fecha: b.fecha || null,
+    }]).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...b, id: data.id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/egresos/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('egresos').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 🔥 ACTIVITY LOG
+// ===============================
+app.get('/activity', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('activity_log').select('*')
+      .eq('cliente_id', req.cliente_id).order('created_at', { ascending: false }).limit(100);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data.map(r => ({
+      id: r.id, ts: r.ts_iso || r.created_at,
+      leadId: r.lead_id || '', nombre: r.lead_nombre || '—',
+      instagram: r.lead_instagram || '', accion: r.accion || '',
+      detalle: r.detalle || '', usuario: r.usuario || '',
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/activity', validateAccess, async (req, res) => {
+  try {
+    const { accion, lead_nombre, lead_instagram, detalle, usuario, lead_id, ts_iso } = req.body;
+    const { error } = await supabase.from('activity_log').insert([{
+      cliente_id: req.cliente_id, accion: accion || '',
+      lead_nombre: lead_nombre || '', lead_instagram: lead_instagram || '',
+      detalle: detalle || '', usuario: usuario || '', lead_id: lead_id || '',
+      ts_iso: ts_iso || new Date().toISOString(),
+    }]);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/activity/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('activity_log').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
