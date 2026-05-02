@@ -483,14 +483,8 @@ app.get('/clientes', validateAccess, async (req, res) => {
 app.post('/clientes', validateAccess, async (req, res) => {
   try {
     const {
-      nombre,
-      instagram,
-      inicio,
-      fin,
-      tipo_pago,
-      cash_collected,
-      comprobante,
-      estado
+      nombre, instagram, inicio, fin, tipo_pago, cash_collected,
+      comprobante, estado, pp, proxpaso, road, mod, proxpago, programa
     } = req.body;
 
     if (!nombre) {
@@ -522,7 +516,13 @@ app.post('/clientes', validateAccess, async (req, res) => {
         tipo_pago: tipo_pago || 'Contado',
         cash_collected: cash_collected || 0,
         comprobante: comprobante || '',
-        estado: estado || 'Al día'
+        estado: estado || 'Al día',
+        pp: pp || null,
+        proxpaso: proxpaso || null,
+        road: road || null,
+        mod: mod || null,
+        proxpago: proxpago || null,
+        programa: programa || null,
       }])
       .select()
       .single();
