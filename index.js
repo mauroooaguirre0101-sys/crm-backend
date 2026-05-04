@@ -540,6 +540,7 @@ app.post('/clientes', validateAccess, async (req, res) => {
         nombre: parts[0] || nombre,
         apellido: parts.slice(1).join(' ') || '',
         negocio: programa || '',
+        instagram: instagram ? instagram.toLowerCase().replace(/^@/, '') : '',
         source_id: data.id
       }]);
     } catch (e) { /* no bloquear si falla */ }
@@ -872,7 +873,7 @@ app.get('/alumnos', validateAccess, async (req, res) => {
 
 app.post('/alumnos', validateAccess, async (req, res) => {
   try {
-    const { nombre, apellido, negocio, email } = req.body;
+    const { nombre, apellido, negocio, email, instagram } = req.body;
     if (!nombre) return res.status(400).json({ error: 'Falta nombre' });
     const { data, error } = await supabase.from('alumnos').insert([{
       cliente_id: req.cliente_id,
@@ -880,6 +881,7 @@ app.post('/alumnos', validateAccess, async (req, res) => {
       apellido: (apellido || '').trim(),
       negocio: (negocio || '').trim(),
       email: (email || '').trim(),
+      instagram: instagram ? instagram.toLowerCase().replace(/^@/, '') : '',
     }]).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
@@ -921,7 +923,7 @@ app.get('/reportes', validateAccess, async (req, res) => {
 // Público: alumnos envían su reporte sin necesitar auth
 app.post('/reportes', async (req, res) => {
   try {
-    const { cliente_id, alumno_id, nombre, apellido, instagram, semana, estado,
+    let { cliente_id, alumno_id, nombre, apellido, instagram, semana, estado,
             situacion, objetivos, logros, problemas, ayuda,
             implementacion, porque_no, extra } = req.body;
     if (!cliente_id) return res.status(400).json({ error: 'Falta cliente_id' });
@@ -929,6 +931,18 @@ app.post('/reportes', async (req, res) => {
     const { data: check } = await supabase.from('user_clientes')
       .select('cliente_id').eq('cliente_id', cliente_id).limit(1);
     if (!check || check.length === 0) return res.status(400).json({ error: 'Cliente inválido' });
+
+    // Auto-asignar alumno por instagram si no viene alumno_id
+    const igClean = instagram ? instagram.toLowerCase().replace(/^@/, '') : '';
+    if (!alumno_id && igClean) {
+      const { data: match } = await supabase.from('alumnos')
+        .select('id')
+        .eq('cliente_id', cliente_id)
+        .eq('instagram', igClean)
+        .maybeSingle();
+      if (match) alumno_id = match.id;
+    }
+
     const { data, error } = await supabase.from('reportes_semanales').insert([{
       cliente_id,
       alumno_id: alumno_id || null,
@@ -967,7 +981,7 @@ app.delete('/reportes/:id', validateAccess, async (req, res) => {
 app.post('/sync-alumnos-from-clientes', validateAccess, async (req, res) => {
   try {
     const [{ data: clientes }, { data: alumnosExist }] = await Promise.all([
-      supabase.from('clientes').select('id,nombre,programa').eq('cliente_id', req.cliente_id),
+      supabase.from('clientes').select('id,nombre,programa,instagram').eq('cliente_id', req.cliente_id),
       supabase.from('alumnos').select('source_id').eq('cliente_id', req.cliente_id)
     ]);
     const existingIds = new Set((alumnosExist || []).map(a => a.source_id).filter(Boolean));
@@ -980,6 +994,7 @@ app.post('/sync-alumnos-from-clientes', validateAccess, async (req, res) => {
         nombre: parts[0] || c.nombre,
         apellido: parts.slice(1).join(' ') || '',
         negocio: c.programa || '',
+        instagram: c.instagram ? c.instagram.toLowerCase().replace(/^@/, '') : '',
         source_id: c.id
       }]);
       created++;
