@@ -921,7 +921,7 @@ app.get('/reportes', validateAccess, async (req, res) => {
 // Público: alumnos envían su reporte sin necesitar auth
 app.post('/reportes', async (req, res) => {
   try {
-    const { cliente_id, alumno_id, nombre, apellido, semana, estado,
+    const { cliente_id, alumno_id, nombre, apellido, instagram, semana, estado,
             situacion, objetivos, logros, problemas, ayuda,
             implementacion, porque_no, extra } = req.body;
     if (!cliente_id) return res.status(400).json({ error: 'Falta cliente_id' });
@@ -934,6 +934,7 @@ app.post('/reportes', async (req, res) => {
       alumno_id: alumno_id || null,
       nombre: nombre || '',
       apellido: apellido || '',
+      instagram: instagram ? instagram.toLowerCase().replace(/^@/, '') : '',
       semana: semana || '',
       estado: estado || '',
       situacion: situacion || '',
