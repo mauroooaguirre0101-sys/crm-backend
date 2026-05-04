@@ -1029,6 +1029,55 @@ app.post('/sync-alumnos-from-clientes', validateAccess, async (req, res) => {
 });
 
 
+// ===============================
+// 📅 SESIONES
+// ===============================
+app.get('/sesiones', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('sesiones').select('*')
+      .eq('cliente_id', req.cliente_id).order('fecha', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/sesiones', validateAccess, async (req, res) => {
+  try {
+    const { alumno_id, fecha, hora, notas_previas } = req.body;
+    if (!fecha) return res.status(400).json({ error: 'Falta fecha' });
+    const { data, error } = await supabase.from('sesiones').insert([{
+      cliente_id: req.cliente_id,
+      alumno_id: alumno_id || null,
+      fecha, hora: hora || null,
+      notas_previas: notas_previas || '',
+      resumen: ''
+    }]).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/sesiones/:id', validateAccess, async (req, res) => {
+  try {
+    const updates = { ...req.body };
+    delete updates.id; delete updates.cliente_id; delete updates.created_at;
+    const { data, error } = await supabase.from('sesiones').update(updates)
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/sesiones/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('sesiones').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
