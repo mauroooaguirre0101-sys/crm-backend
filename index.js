@@ -532,6 +532,18 @@ app.post('/clientes', validateAccess, async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
 
+    // Auto-crear alumno vinculado al cliente
+    try {
+      const parts = (nombre || '').trim().split(' ');
+      await supabase.from('alumnos').insert([{
+        cliente_id: req.cliente_id,
+        nombre: parts[0] || nombre,
+        apellido: parts.slice(1).join(' ') || '',
+        negocio: programa || '',
+        source_id: data.id
+      }]);
+    } catch (e) { /* no bloquear si falla */ }
+
     res.json(data);
 
   } catch (err) {
@@ -945,6 +957,36 @@ app.delete('/reportes/:id', validateAccess, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 🔄 SYNC CLIENTES → ALUMNOS
+// ===============================
+app.post('/sync-alumnos-from-clientes', validateAccess, async (req, res) => {
+  try {
+    const [{ data: clientes }, { data: alumnosExist }] = await Promise.all([
+      supabase.from('clientes').select('id,nombre,programa').eq('cliente_id', req.cliente_id),
+      supabase.from('alumnos').select('source_id').eq('cliente_id', req.cliente_id)
+    ]);
+    const existingIds = new Set((alumnosExist || []).map(a => a.source_id).filter(Boolean));
+    const toCreate = (clientes || []).filter(c => !existingIds.has(c.id));
+    let created = 0;
+    for (const c of toCreate) {
+      const parts = (c.nombre || '').trim().split(' ');
+      await supabase.from('alumnos').insert([{
+        cliente_id: req.cliente_id,
+        nombre: parts[0] || c.nombre,
+        apellido: parts.slice(1).join(' ') || '',
+        negocio: c.programa || '',
+        source_id: c.id
+      }]);
+      created++;
+    }
+    res.json({ synced: created, total: clientes?.length || 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 
