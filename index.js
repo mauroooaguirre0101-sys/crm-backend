@@ -888,6 +888,20 @@ app.post('/alumnos', validateAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.patch('/alumnos/:id', validateAccess, async (req, res) => {
+  try {
+    const updates = { ...req.body };
+    delete updates.id; delete updates.cliente_id; delete updates.created_at;
+    if (updates.instagram !== undefined) {
+      updates.instagram = (updates.instagram || '').toLowerCase().replace(/^@+/, '').trim();
+    }
+    const { data, error } = await supabase.from('alumnos').update(updates)
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.delete('/alumnos/:id', validateAccess, async (req, res) => {
   try {
     const { error } = await supabase.from('alumnos').delete()
@@ -933,14 +947,23 @@ app.post('/reportes', async (req, res) => {
     if (!check || check.length === 0) return res.status(400).json({ error: 'Cliente inválido' });
 
     // Auto-asignar alumno por instagram si no viene alumno_id
-    const igClean = instagram ? instagram.toLowerCase().replace(/^@/, '') : '';
+    const igClean = instagram ? instagram.toLowerCase().replace(/^@+/, '').trim() : '';
     if (!alumno_id && igClean) {
-      const { data: match } = await supabase.from('alumnos')
-        .select('id')
-        .eq('cliente_id', cliente_id)
-        .eq('instagram', igClean)
-        .maybeSingle();
-      if (match) alumno_id = match.id;
+      // 1. Busca directo en alumnos por instagram
+      const { data: matchDirect } = await supabase.from('alumnos')
+        .select('id').eq('cliente_id', cliente_id).eq('instagram', igClean).maybeSingle();
+      if (matchDirect) {
+        alumno_id = matchDirect.id;
+      } else {
+        // 2. Fallback: busca por clientes.instagram → alumnos.source_id
+        const { data: matchCliente } = await supabase.from('clientes')
+          .select('id').eq('cliente_id', cliente_id).eq('instagram', igClean).maybeSingle();
+        if (matchCliente) {
+          const { data: matchAlumno } = await supabase.from('alumnos')
+            .select('id').eq('cliente_id', cliente_id).eq('source_id', matchCliente.id).maybeSingle();
+          if (matchAlumno) alumno_id = matchAlumno.id;
+        }
+      }
     }
 
     const { data, error } = await supabase.from('reportes_semanales').insert([{
