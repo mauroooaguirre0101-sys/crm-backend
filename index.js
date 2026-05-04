@@ -846,6 +846,108 @@ app.delete('/activity/:id', validateAccess, async (req, res) => {
 });
 
 
+// ===============================
+// 🎓 ALUMNOS
+// ===============================
+app.get('/alumnos', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('alumnos').select('*')
+      .eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/alumnos', validateAccess, async (req, res) => {
+  try {
+    const { nombre, apellido, negocio, email } = req.body;
+    if (!nombre) return res.status(400).json({ error: 'Falta nombre' });
+    const { data, error } = await supabase.from('alumnos').insert([{
+      cliente_id: req.cliente_id,
+      nombre: nombre.trim(),
+      apellido: (apellido || '').trim(),
+      negocio: (negocio || '').trim(),
+      email: (email || '').trim(),
+    }]).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/alumnos/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('alumnos').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Endpoint público: solo nombre/apellido de un alumno (para pre-llenar el formulario)
+app.get('/alumno/:id', async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('alumnos')
+      .select('nombre,apellido,negocio').eq('id', req.params.id).single();
+    if (error || !data) return res.status(404).json({ error: 'No encontrado' });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 📋 REPORTES SEMANALES
+// ===============================
+app.get('/reportes', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('reportes_semanales').select('*')
+      .eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Público: alumnos envían su reporte sin necesitar auth
+app.post('/reportes', async (req, res) => {
+  try {
+    const { cliente_id, alumno_id, nombre, apellido, semana, estado,
+            situacion, objetivos, logros, problemas, ayuda,
+            implementacion, porque_no, extra } = req.body;
+    if (!cliente_id) return res.status(400).json({ error: 'Falta cliente_id' });
+    // Verificar que el cliente_id existe
+    const { data: check } = await supabase.from('user_clientes')
+      .select('cliente_id').eq('cliente_id', cliente_id).limit(1);
+    if (!check || check.length === 0) return res.status(400).json({ error: 'Cliente inválido' });
+    const { data, error } = await supabase.from('reportes_semanales').insert([{
+      cliente_id,
+      alumno_id: alumno_id || null,
+      nombre: nombre || '',
+      apellido: apellido || '',
+      semana: semana || '',
+      estado: estado || '',
+      situacion: situacion || '',
+      objetivos: objetivos || '',
+      logros: logros || '',
+      problemas: problemas || '',
+      ayuda: ayuda || [],
+      implementacion: implementacion || '',
+      porque_no: porque_no || '',
+      extra: extra || '',
+    }]).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/reportes/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('reportes_semanales').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
