@@ -1078,6 +1078,84 @@ app.delete('/sesiones/:id', validateAccess, async (req, res) => {
 });
 
 
+// ===============================
+// 🏢 HOLDING
+// ===============================
+async function holdingAccess(email) {
+  if (!email) return false;
+  const { data } = await supabase.from('user_clientes')
+    .select('role').eq('user_email', email).eq('cliente_id', 'holding').maybeSingle();
+  return !!data;
+}
+
+app.get('/holding/clientes', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { data } = await supabase.from('user_clientes').select('cliente_id').neq('cliente_id', 'holding');
+    const unique = [...new Set((data || []).map(x => x.cliente_id))].sort();
+    res.json(unique);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/holding/metrics', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+
+    const ids = (req.query.cliente_ids || '').split(',').filter(Boolean);
+    if (!ids.length) return res.json([]);
+
+    const { from, to } = req.query;
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+
+    const results = await Promise.all(ids.map(async cid => {
+      let cq = supabase.from('clientes').select('cash_collected,pp,created_at').eq('cliente_id', cid);
+      if (from) cq = cq.gte('created_at', from + 'T00:00:00.000Z');
+      if (to)   cq = cq.lte('created_at', to   + 'T23:59:59.999Z');
+      const { data: cliPeriod } = await cq;
+
+      let lq = supabase.from('leads').select('estado,created_at').eq('cliente_id', cid)
+        .in('estado', ['Cerrado', 'Seña']);
+      if (from) lq = lq.gte('created_at', from + 'T00:00:00.000Z');
+      if (to)   lq = lq.lte('created_at', to   + 'T23:59:59.999Z');
+      const { data: leadPeriod } = await lq;
+
+      const { data: cliYear } = await supabase.from('clientes')
+        .select('cash_collected,created_at').eq('cliente_id', cid)
+        .gte('created_at', `${year}-01-01T00:00:00.000Z`)
+        .lte('created_at', `${year}-12-31T23:59:59.999Z`);
+
+      const { data: leadYear } = await supabase.from('leads')
+        .select('estado,created_at').eq('cliente_id', cid)
+        .in('estado', ['Cerrado', 'Seña'])
+        .gte('created_at', `${year}-01-01T00:00:00.000Z`)
+        .lte('created_at', `${year}-12-31T23:59:59.999Z`);
+
+      const monthly = Array.from({ length: 12 }, (_, i) => {
+        const m = String(i + 1).padStart(2, '0');
+        const mCli  = (cliYear  || []).filter(x => (x.created_at || '').slice(5, 7) === m);
+        const mLead = (leadYear || []).filter(x => (x.created_at || '').slice(5, 7) === m);
+        return {
+          ingresos: mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
+          closes:   mLead.length
+        };
+      });
+
+      return {
+        cliente_id: cid,
+        ingresos:       (cliPeriod  || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
+        contratado:     (cliPeriod  || []).reduce((s, x) => s + (parseFloat(x.pp)             || 0), 0),
+        closes:         (leadPeriod || []).length,
+        monthly
+      };
+    }));
+
+    res.json(results);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
