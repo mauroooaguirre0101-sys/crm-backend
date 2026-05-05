@@ -1137,16 +1137,17 @@ app.get('/holding/metrics', async (req, res) => {
         const mCli  = (cliYear  || []).filter(x => (x.created_at || '').slice(5, 7) === m);
         const mLead = (leadYear || []).filter(x => (x.created_at || '').slice(5, 7) === m);
         return {
-          ingresos: mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
-          closes:   mLead.length
+          facturacion:   mCli.reduce((s, x) => s + (parseFloat(x.pp)             || 0), 0),
+          cash_collected:mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
+          closes:        mLead.length
         };
       });
 
       return {
-        cliente_id: cid,
-        ingresos:       (cliPeriod  || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
-        contratado:     (cliPeriod  || []).reduce((s, x) => s + (parseFloat(x.pp)             || 0), 0),
-        closes:         (leadPeriod || []).length,
+        cliente_id:    cid,
+        facturacion:   (cliPeriod || []).reduce((s, x) => s + (parseFloat(x.pp)             || 0), 0),
+        cash_collected:(cliPeriod || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
+        closes:        (leadPeriod || []).length,
         monthly
       };
     }));
