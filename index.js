@@ -1110,18 +1110,32 @@ app.get('/holding/metrics', async (req, res) => {
     const year = parseInt(req.query.year) || new Date().getFullYear();
 
     const results = await Promise.all(ids.map(async cid => {
-      let cq = supabase.from('clientes').select('cash_collected,pp,created_at').eq('cliente_id', cid);
+      // Facturación: suma de ingresos.usd filtrada por fecha
+      let iq = supabase.from('ingresos').select('usd,fecha').eq('cliente_id', cid);
+      if (from) iq = iq.gte('fecha', from);
+      if (to)   iq = iq.lte('fecha', to);
+      const { data: ingPeriod } = await iq;
+
+      // Cash collected: suma de clientes.cash_collected filtrada por created_at
+      let cq = supabase.from('clientes').select('cash_collected,created_at').eq('cliente_id', cid);
       if (from) cq = cq.gte('created_at', from + 'T00:00:00.000Z');
       if (to)   cq = cq.lte('created_at', to   + 'T23:59:59.999Z');
       const { data: cliPeriod } = await cq;
 
+      // Cierres: llamadas con estado Cierre
       let cq2 = supabase.from('calls').select('estado,created_at').eq('cliente_id', cid).eq('estado', 'Cierre');
       if (from) cq2 = cq2.gte('created_at', from + 'T00:00:00.000Z');
       if (to)   cq2 = cq2.lte('created_at', to   + 'T23:59:59.999Z');
       const { data: callPeriod } = await cq2;
 
+      // Datos anuales para gráfico de evolución mensual
+      const { data: ingYear } = await supabase.from('ingresos')
+        .select('usd,fecha').eq('cliente_id', cid)
+        .gte('fecha', `${year}-01-01`)
+        .lte('fecha', `${year}-12-31`);
+
       const { data: cliYear } = await supabase.from('clientes')
-        .select('cash_collected,pp,created_at').eq('cliente_id', cid)
+        .select('cash_collected,created_at').eq('cliente_id', cid)
         .gte('created_at', `${year}-01-01T00:00:00.000Z`)
         .lte('created_at', `${year}-12-31T23:59:59.999Z`);
 
@@ -1132,10 +1146,11 @@ app.get('/holding/metrics', async (req, res) => {
 
       const monthly = Array.from({ length: 12 }, (_, i) => {
         const m = String(i + 1).padStart(2, '0');
+        const mIng  = (ingYear  || []).filter(x => (x.fecha || '').slice(5, 7) === m);
         const mCli  = (cliYear  || []).filter(x => (x.created_at || '').slice(5, 7) === m);
         const mCall = (callYear || []).filter(x => (x.created_at || '').slice(5, 7) === m);
         return {
-          facturacion:   mCli.reduce((s, x) => s + (parseFloat(x.pp) || parseFloat(x.cash_collected) || 0), 0),
+          facturacion:   mIng.reduce((s, x) => s + (parseFloat(x.usd) || 0), 0),
           cash_collected:mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
           closes:        mCall.length
         };
@@ -1143,8 +1158,8 @@ app.get('/holding/metrics', async (req, res) => {
 
       return {
         cliente_id:    cid,
-        facturacion:   (cliPeriod || []).reduce((s, x) => s + (parseFloat(x.pp) || parseFloat(x.cash_collected) || 0), 0),
-        cash_collected:(cliPeriod || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
+        facturacion:   (ingPeriod  || []).reduce((s, x) => s + (parseFloat(x.usd)           || 0), 0),
+        cash_collected:(cliPeriod  || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
         closes:        (callPeriod || []).length,
         monthly
       };
