@@ -1115,39 +1115,37 @@ app.get('/holding/metrics', async (req, res) => {
       if (to)   cq = cq.lte('created_at', to   + 'T23:59:59.999Z');
       const { data: cliPeriod } = await cq;
 
-      let lq = supabase.from('leads').select('estado,created_at').eq('cliente_id', cid)
-        .in('estado', ['Cerrado', 'Seña']);
-      if (from) lq = lq.gte('created_at', from + 'T00:00:00.000Z');
-      if (to)   lq = lq.lte('created_at', to   + 'T23:59:59.999Z');
-      const { data: leadPeriod } = await lq;
+      let cq2 = supabase.from('calls').select('estado,created_at').eq('cliente_id', cid).eq('estado', 'Cierre');
+      if (from) cq2 = cq2.gte('created_at', from + 'T00:00:00.000Z');
+      if (to)   cq2 = cq2.lte('created_at', to   + 'T23:59:59.999Z');
+      const { data: callPeriod } = await cq2;
 
       const { data: cliYear } = await supabase.from('clientes')
-        .select('cash_collected,created_at').eq('cliente_id', cid)
+        .select('cash_collected,pp,created_at').eq('cliente_id', cid)
         .gte('created_at', `${year}-01-01T00:00:00.000Z`)
         .lte('created_at', `${year}-12-31T23:59:59.999Z`);
 
-      const { data: leadYear } = await supabase.from('leads')
-        .select('estado,created_at').eq('cliente_id', cid)
-        .in('estado', ['Cerrado', 'Seña'])
+      const { data: callYear } = await supabase.from('calls')
+        .select('estado,created_at').eq('cliente_id', cid).eq('estado', 'Cierre')
         .gte('created_at', `${year}-01-01T00:00:00.000Z`)
         .lte('created_at', `${year}-12-31T23:59:59.999Z`);
 
       const monthly = Array.from({ length: 12 }, (_, i) => {
         const m = String(i + 1).padStart(2, '0');
         const mCli  = (cliYear  || []).filter(x => (x.created_at || '').slice(5, 7) === m);
-        const mLead = (leadYear || []).filter(x => (x.created_at || '').slice(5, 7) === m);
+        const mCall = (callYear || []).filter(x => (x.created_at || '').slice(5, 7) === m);
         return {
-          facturacion:   mCli.reduce((s, x) => s + (parseFloat(x.pp)             || 0), 0),
+          facturacion:   mCli.reduce((s, x) => s + (parseFloat(x.pp) || parseFloat(x.cash_collected) || 0), 0),
           cash_collected:mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
-          closes:        mLead.length
+          closes:        mCall.length
         };
       });
 
       return {
         cliente_id:    cid,
-        facturacion:   (cliPeriod || []).reduce((s, x) => s + (parseFloat(x.pp)             || 0), 0),
+        facturacion:   (cliPeriod || []).reduce((s, x) => s + (parseFloat(x.pp) || parseFloat(x.cash_collected) || 0), 0),
         cash_collected:(cliPeriod || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
-        closes:        (leadPeriod || []).length,
+        closes:        (callPeriod || []).length,
         monthly
       };
     }));
