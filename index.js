@@ -1170,6 +1170,207 @@ app.get('/holding/metrics', async (req, res) => {
 });
 
 
+// ===============================
+// 📋 SOPS
+// ===============================
+app.get('/sops', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('sops').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/sops', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('sops').insert({ cliente_id: req.cliente_id, data: req.body }).select('id').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/sops/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('sops').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 🏛 FUNDACIONES
+// ===============================
+app.get('/fundaciones', validateAccess, async (req, res) => {
+  try {
+    const { data } = await supabase.from('fundaciones').select('data').eq('cliente_id', req.cliente_id).single();
+    res.json(data?.data || {});
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/fundaciones', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('fundaciones').upsert({ cliente_id: req.cliente_id, data: req.body, updated_at: new Date().toISOString() }, { onConflict: 'cliente_id' });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 📝 CONTENIDO (posts + historias)
+// ===============================
+app.get('/contenido', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('contenido').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/contenido', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('contenido').insert({ cliente_id: req.cliente_id, data: req.body }).select('id').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/contenido/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('contenido').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 🎯 ANGULOS
+// ===============================
+app.get('/angulos', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('angulos').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/angulos', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('angulos').insert({ cliente_id: req.cliente_id, data: req.body }).select('id').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/angulos/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('angulos').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 👥 REFERENTES
+// ===============================
+app.get('/referentes', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('referentes').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/referentes', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('referentes').insert({ cliente_id: req.cliente_id, data: req.body }).select('id').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/referentes/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('referentes').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 📊 METRICAS
+// ===============================
+app.get('/metricas', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('metricas').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/metricas', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('metricas').insert({ cliente_id: req.cliente_id, data: req.body }).select('id').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/metricas/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('metricas').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 📸 INSTAGRAM
+// ===============================
+app.get('/ig/cuenta', validateAccess, async (req, res) => {
+  try {
+    const { data } = await supabase.from('ig_cuenta').select('data').eq('cliente_id', req.cliente_id).single();
+    res.json(data?.data || {});
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.put('/ig/cuenta', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('ig_cuenta').upsert({ cliente_id: req.cliente_id, data: req.body, updated_at: new Date().toISOString() }, { onConflict: 'cliente_id' });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/ig/reels', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('ig_reels').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/ig/reels', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('ig_reels').insert({ cliente_id: req.cliente_id, data: req.body }).select('id').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/ig/reels/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('ig_reels').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/ig/carruseles', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('ig_carruseles').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/ig/carruseles', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('ig_carruseles').insert({ cliente_id: req.cliente_id, data: req.body }).select('id').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/ig/carruseles/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('ig_carruseles').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
