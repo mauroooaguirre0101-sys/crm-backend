@@ -904,6 +904,11 @@ app.patch('/alumnos/:id', validateAccess, async (req, res) => {
 
 app.delete('/alumnos/:id', validateAccess, async (req, res) => {
   try {
+    // Delete related records first to avoid FK constraint failures
+    await supabase.from('reportes_semanales').delete()
+      .eq('alumno_id', req.params.id).eq('cliente_id', req.cliente_id);
+    await supabase.from('sesiones').delete()
+      .eq('alumno_id', req.params.id).eq('cliente_id', req.cliente_id);
     const { error } = await supabase.from('alumnos').delete()
       .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
     if (error) return res.status(500).json({ error: error.message });
@@ -1005,9 +1010,20 @@ app.post('/sync-alumnos-from-clientes', validateAccess, async (req, res) => {
   try {
     const [{ data: clientes }, { data: alumnosExist }] = await Promise.all([
       supabase.from('clientes').select('id,nombre,programa,instagram').eq('cliente_id', req.cliente_id),
-      supabase.from('alumnos').select('source_id').eq('cliente_id', req.cliente_id)
+      supabase.from('alumnos').select('id,source_id').eq('cliente_id', req.cliente_id)
     ]);
+    const activeSourceIds = new Set((clientes || []).map(c => c.id));
     const existingIds = new Set((alumnosExist || []).map(a => a.source_id).filter(Boolean));
+
+    // Remove alumnos whose source client no longer exists
+    const toRemove = (alumnosExist || []).filter(a => a.source_id && !activeSourceIds.has(a.source_id));
+    for (const a of toRemove) {
+      await supabase.from('reportes_semanales').delete().eq('alumno_id', a.id).eq('cliente_id', req.cliente_id);
+      await supabase.from('sesiones').delete().eq('alumno_id', a.id).eq('cliente_id', req.cliente_id);
+      await supabase.from('alumnos').delete().eq('id', a.id).eq('cliente_id', req.cliente_id);
+    }
+
+    // Add alumnos for new clientes
     const toCreate = (clientes || []).filter(c => !existingIds.has(c.id));
     let created = 0;
     for (const c of toCreate) {
@@ -1022,7 +1038,7 @@ app.post('/sync-alumnos-from-clientes', validateAccess, async (req, res) => {
       }]);
       created++;
     }
-    res.json({ synced: created, total: clientes?.length || 0 });
+    res.json({ synced: created, removed: toRemove.length, total: clientes?.length || 0 });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
