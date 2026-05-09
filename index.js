@@ -1140,7 +1140,8 @@ app.get('/holding/clientes', async (req, res) => {
   try {
     const email = req.headers['x-user-email'];
     if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
-    const { data } = await supabase.from('user_clientes').select('cliente_id').neq('cliente_id', 'holding');
+    const { data } = await supabase.from('user_clientes').select('cliente_id')
+      .eq('user_email', email).neq('cliente_id', 'holding');
     const unique = [...new Set((data || []).map(x => x.cliente_id))].sort();
     res.json(unique);
   } catch (err) { res.status(500).json({ error: err.message }); }
