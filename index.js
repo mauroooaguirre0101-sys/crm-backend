@@ -860,6 +860,38 @@ app.delete('/activity/:id', validateAccess, async (req, res) => {
 
 
 // ===============================
+// 👥 TEAM PRESENCE
+// ===============================
+app.post('/team/heartbeat', validateAccess, async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    const rol = req.user.role || req.body.rol || 'setter';
+    const nombre = req.body.nombre || email.split('@')[0];
+    const { error } = await supabase.from('team_presence').upsert({
+      cliente_id: req.cliente_id,
+      email,
+      rol,
+      nombre,
+      last_seen: new Date().toISOString()
+    }, { onConflict: 'cliente_id,email' });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/team', validateAccess, async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data, error } = await supabase.from('team_presence')
+      .select('email, rol, nombre, last_seen')
+      .eq('cliente_id', req.cliente_id)
+      .gte('last_seen', since);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ===============================
 // 🎓 ALUMNOS
 // ===============================
 app.get('/alumnos', validateAccess, async (req, res) => {
