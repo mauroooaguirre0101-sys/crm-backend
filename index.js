@@ -484,7 +484,7 @@ app.post('/clientes', validateAccess, async (req, res) => {
   try {
     const {
       nombre, instagram, inicio, fin, tipo_pago, cash_collected,
-      comprobante, estado, pp, proxpaso, road, mod, proxpago, programa
+      comprobante, estado, pp, proxpaso, road, mod, proxpago, programa, origen
     } = req.body;
 
     if (!nombre) {
@@ -523,6 +523,7 @@ app.post('/clientes', validateAccess, async (req, res) => {
         mod: mod || null,
         proxpago: proxpago || null,
         programa: programa || null,
+        origen: origen || null,
       }])
       .select()
       .single();
