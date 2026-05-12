@@ -861,6 +861,52 @@ app.delete('/activity/:id', validateAccess, async (req, res) => {
 
 
 // ===============================
+// 🏋 EQUIPO MEMBERS
+// ===============================
+app.get('/equipo/members', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('equipo_members')
+      .select('*').eq('cliente_id', req.cliente_id).order('created_at');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/equipo/members', validateAccess, async (req, res) => {
+  try {
+    const { nombre, role } = req.body;
+    if (!nombre || !role) return res.status(400).json({ error: 'nombre y role son obligatorios' });
+    const { data, error } = await supabase.from('equipo_members')
+      .insert([{ cliente_id: req.cliente_id, nombre, role, rules: [] }])
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/equipo/members/:id', validateAccess, async (req, res) => {
+  try {
+    const updates = {};
+    if (req.body.nombre !== undefined) updates.nombre = req.body.nombre;
+    if (req.body.rules  !== undefined) updates.rules  = req.body.rules;
+    const { data, error } = await supabase.from('equipo_members')
+      .update(updates).eq('id', req.params.id).eq('cliente_id', req.cliente_id)
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/equipo/members/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('equipo_members')
+      .delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ===============================
 // 👥 TEAM PRESENCE
 // ===============================
 app.post('/team/heartbeat', validateAccess, async (req, res) => {
