@@ -1325,6 +1325,13 @@ app.post('/contenido', validateAccess, async (req, res) => {
     res.json({ ...req.body, id: data.id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.patch('/contenido/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('contenido').update({ data: req.body }).eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: req.params.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.delete('/contenido/:id', validateAccess, async (req, res) => {
   try {
     const { error } = await supabase.from('contenido').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
