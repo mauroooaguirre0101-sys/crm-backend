@@ -6,7 +6,7 @@ const app = express();
 
 // ✅ Middlewares
 app.use(cors({ origin: '*' }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // 🔑 Supabase
 const supabase = createClient(
@@ -1534,6 +1534,23 @@ app.delete('/ig/carruseles/:id', validateAccess, async (req, res) => {
     const { error } = await supabase.from('ig_carruseles').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 👥 HOLDING USERS
+// ===============================
+app.get('/holding/users', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso' });
+    const { data: myClients } = await supabase.from('user_clientes').select('cliente_id').eq('user_email', email).neq('cliente_id', 'holding');
+    const clientIds = [...new Set((myClients||[]).map(x => x.cliente_id))];
+    if (!clientIds.length) return res.json([]);
+    const { data: users } = await supabase.from('user_clientes').select('user_email,cliente_id,role').in('cliente_id', clientIds);
+    const map = {};
+    (users||[]).forEach(u => { if (!map[u.user_email]) map[u.user_email] = { email: u.user_email, clientes: [] }; map[u.user_email].clientes.push(u.cliente_id); });
+    res.json(Object.values(map));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
