@@ -132,6 +132,55 @@ app.get('/leads', validateAccess, async (req, res) => {
 
 
 // ===============================
+// 🔥 CREATE LEAD (manual)
+// ===============================
+app.post('/leads', validateAccess, async (req, res) => {
+  try {
+    const {
+      nombre, instagram, origen, tipo, etiqueta,
+      estado, ultima_accion, notas, seguimientos,
+      source, updated_at, estado_updated_at, created_at,
+    } = req.body;
+
+    if (!nombre || !nombre.trim()) {
+      return res.status(400).json({ error: 'Falta nombre' });
+    }
+
+    const now = new Date().toISOString();
+    const row = {
+      nombre:           nombre.trim(),
+      instagram:        instagram ? instagram.trim().replace(/^@/, '').toLowerCase() : '',
+      origen:           origen || 'Inbound',
+      tipo:             tipo || 'Organico',
+      etiqueta:         etiqueta || '',
+      estado:           estado || 'Primer contacto',
+      ultima_accion:    ultima_accion || '',
+      notas:            notas || '',
+      seguimientos:     parseInt(seguimientos) || 0,
+      source:           source || 'manual',
+      updated_at:       updated_at || now,
+      estado_updated_at: estado_updated_at || now,
+      created_at:       created_at || now,
+      cliente_id:       req.cliente_id,
+    };
+
+    const { error } = await supabase.from('leads').insert(row);
+
+    if (error) {
+      console.error('❌ INSERT LEAD:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.json({ ok: true });
+
+  } catch (err) {
+    console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
 // 🔥 UPDATE LEAD
 // ===============================
 app.patch('/leads/:id', validateAccess, async (req, res) => {
