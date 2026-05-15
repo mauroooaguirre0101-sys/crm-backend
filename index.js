@@ -147,24 +147,38 @@ app.post('/leads', validateAccess, async (req, res) => {
     }
 
     const now = new Date().toISOString();
-    const row = {
-      nombre:           nombre.trim(),
-      instagram:        instagram ? instagram.trim().replace(/^@/, '').toLowerCase() : '',
-      origen:           origen || 'Inbound',
-      tipo:             tipo || 'Organico',
-      etiqueta:         etiqueta || '',
-      estado:           estado || 'Primer contacto',
-      ultima_accion:    ultima_accion || '',
-      notas:            notas || '',
-      seguimientos:     parseInt(seguimientos) || 0,
-      source:           source || 'manual',
-      updated_at:       updated_at || now,
-      estado_updated_at: estado_updated_at || now,
-      created_at:       created_at || now,
-      cliente_id:       req.cliente_id,
+
+    // Core fields — definitely exist in the schema
+    const coreRow = {
+      nombre:        nombre.trim(),
+      instagram:     instagram ? instagram.trim().replace(/^@/, '').toLowerCase() : '',
+      origen:        origen || 'Inbound',
+      tipo:          tipo || 'Organico',
+      etiqueta:      etiqueta || '',
+      estado:        estado || 'Primer contacto',
+      ultima_accion: ultima_accion || '',
+      notas:         notas || '',
+      source:        source || 'manual',
+      created_at:    created_at || now,
+      updated_at:    updated_at || now,
+      cliente_id:    req.cliente_id,
     };
 
-    const { error } = await supabase.from('leads').insert(row);
+    // Try full insert including newer columns first
+    const fullRow = {
+      ...coreRow,
+      seguimientos:      parseInt(seguimientos) || 0,
+      estado_updated_at: estado_updated_at || now,
+    };
+
+    let { error } = await supabase.from('leads').insert(fullRow);
+
+    // If newer columns don't exist yet, fall back to core fields only
+    if (error && (error.message.includes('seguimientos') || error.message.includes('estado_updated_at'))) {
+      console.warn('⚠️ Columnas nuevas no encontradas, insertando sin ellas:', error.message);
+      const result2 = await supabase.from('leads').insert(coreRow);
+      error = result2.error;
+    }
 
     if (error) {
       console.error('❌ INSERT LEAD:', error);
