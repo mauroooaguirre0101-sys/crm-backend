@@ -1537,6 +1537,120 @@ app.delete('/ig/carruseles/:id', validateAccess, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===============================
+// 📋 TAREAS HOLDING
+// ===============================
+app.get('/holding/tareas', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const negocio_id = req.query.negocio_id;
+    let q = supabase.from('tareas_holding').select('*').order('orden', { ascending: true });
+    if (negocio_id) q = q.eq('negocio_id', negocio_id);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/holding/tareas', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { data, error } = await supabase.from('tareas_holding').insert({ ...req.body, created_by: email }).select('*').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.patch('/holding/tareas/:id', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { data, error } = await supabase.from('tareas_holding').update(req.body).eq('id', req.params.id).select('*').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/holding/tareas/:id', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { error } = await supabase.from('tareas_holding').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 🎨 FORMATOS
+// ===============================
+app.get('/formatos', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('formatos').select('id,data,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id, created_at: r.created_at })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/formatos', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('formatos').insert({ cliente_id: req.cliente_id, data: req.body }).select('id,created_at').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...req.body, id: data.id, created_at: data.created_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.patch('/formatos/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('formatos').update({ data: req.body }).eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/formatos/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('formatos').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 🔬 LABORATORIO DE CONTENIDO
+// ===============================
+app.get('/laboratorio', validateAccess, async (req, res) => {
+  try {
+    const tipo = req.query.tipo;
+    let q = supabase.from('laboratorio').select('id,data,tipo,created_at').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (tipo) q = q.eq('tipo', tipo);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({ ...r.data, id: r.id, tipo: r.tipo, created_at: r.created_at })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/laboratorio', validateAccess, async (req, res) => {
+  try {
+    const { tipo, ...rest } = req.body;
+    const { data, error } = await supabase.from('laboratorio').insert({ cliente_id: req.cliente_id, tipo: tipo || 'reel', data: rest }).select('id,created_at').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ...rest, id: data.id, tipo: tipo || 'reel', created_at: data.created_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.patch('/laboratorio/:id', validateAccess, async (req, res) => {
+  try {
+    const { tipo, ...rest } = req.body;
+    const updateObj = { data: rest };
+    if (tipo) updateObj.tipo = tipo;
+    const { error } = await supabase.from('laboratorio').update(updateObj).eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/laboratorio/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('laboratorio').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
