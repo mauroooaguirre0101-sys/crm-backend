@@ -137,7 +137,7 @@ app.get('/leads', validateAccess, async (req, res) => {
 app.post('/leads', validateAccess, async (req, res) => {
   try {
     const {
-      nombre, instagram, origen, tipo, etiqueta,
+      nombre, instagram, origen, tipo, etiqueta, etiquetas,
       estado, ultima_accion, notas, seguimientos,
       source, updated_at, estado_updated_at, created_at,
     } = req.body;
@@ -147,6 +147,8 @@ app.post('/leads', validateAccess, async (req, res) => {
     }
 
     const now = new Date().toISOString();
+    const etiquetasArr = Array.isArray(etiquetas) ? etiquetas
+      : (etiqueta ? [etiqueta] : []);
 
     // Core fields — definitely exist in the schema
     const coreRow = {
@@ -169,12 +171,17 @@ app.post('/leads', validateAccess, async (req, res) => {
       ...coreRow,
       seguimientos:      parseInt(seguimientos) || 0,
       estado_updated_at: estado_updated_at || now,
+      etiquetas:         etiquetasArr,
     };
 
     let { error } = await supabase.from('leads').insert(fullRow);
 
     // If newer columns don't exist yet, fall back to core fields only
-    if (error && (error.message.includes('seguimientos') || error.message.includes('estado_updated_at'))) {
+    if (error && (
+      error.message.includes('seguimientos') ||
+      error.message.includes('estado_updated_at') ||
+      error.message.includes('etiquetas')
+    )) {
       console.warn('⚠️ Columnas nuevas no encontradas, insertando sin ellas:', error.message);
       const result2 = await supabase.from('leads').insert(coreRow);
       error = result2.error;
@@ -472,13 +479,41 @@ app.post('/lead', validateAccess, async (req, res) => {
     const tipoFinal = tipo || 'comentario';
     const origenFinal = origen || 'Inbound';
     const etiquetaFinal = etiqueta || '';
-
     const tipoLead = tipoFinal === 'seguidor' ? 'Seguidor' : 'Organico';
+    const now = new Date().toISOString();
 
-    const { error: upsertError } = await supabase
+    // Check if lead already exists for this client
+    const { data: existingArr } = await supabase
       .from('leads')
-      .upsert(
-        {
+      .select('id, etiquetas, etiqueta')
+      .eq('instagram', instagram)
+      .eq('cliente_id', req.cliente_id)
+      .limit(1);
+
+    const existing = existingArr?.[0] || null;
+
+    if (existing) {
+      // Append new etiqueta to array — never overwrite
+      const prev = Array.isArray(existing.etiquetas) && existing.etiquetas.length
+        ? existing.etiquetas
+        : (existing.etiqueta ? [existing.etiqueta] : []);
+      const newEtiquetas = etiquetaFinal ? [...prev, etiquetaFinal] : prev;
+
+      const { error: updateError } = await supabase
+        .from('leads')
+        .update({ etiquetas: newEtiquetas, ultima_accion: mensaje || '', updated_at: now })
+        .eq('id', existing.id)
+        .eq('cliente_id', req.cliente_id);
+
+      if (updateError) {
+        console.error('❌ UPDATE LEAD (webhook):', updateError);
+        return res.status(500).json({ error: updateError.message });
+      }
+    } else {
+      // New lead
+      const { error: insertError } = await supabase
+        .from('leads')
+        .insert({
           nombre: nombreLimpio,
           instagram,
           ultima_accion: mensaje || '',
@@ -486,15 +521,17 @@ app.post('/lead', validateAccess, async (req, res) => {
           tipo: tipoLead,
           estado: 'Primer Contacto',
           etiqueta: etiquetaFinal,
+          etiquetas: etiquetaFinal ? [etiquetaFinal] : [],
           source: 'manychat',
-          cliente_id: req.cliente_id
-        },
-        { onConflict: 'instagram' }
-      );
+          cliente_id: req.cliente_id,
+          created_at: now,
+          updated_at: now,
+        });
 
-    if (upsertError) {
-      console.error('❌ UPSERT:', upsertError);
-      return res.status(500).json({ error: upsertError.message });
+      if (insertError) {
+        console.error('❌ INSERT LEAD (webhook):', insertError);
+        return res.status(500).json({ error: insertError.message });
+      }
     }
 
     await supabase
