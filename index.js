@@ -109,20 +109,79 @@ app.get('/', (req, res) => {
 // ===============================
 // 🔥 GET LEADS
 // ===============================
+// Fields returned for the stats cache (leadsCache) — excludes large text blobs
+const LEADS_LITE_FIELDS = [
+  'id','estado','calificado','descalificado','tipo','origen',
+  'created_at','updated_at','estado_updated_at',
+  'etiqueta','etiquetas','nombre','instagram',
+  'source','seguimientos','show','respondio_seguimiento_4',
+].join(',');
+
 app.get('/leads', validateAccess, async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('cliente_id', req.cliente_id)
-      .order('created_at', { ascending: false });
+    const { after, lite, page, per_page, estado, search, period, mes, vista } = req.query;
 
-    if (error) {
-      console.error('❌ GET LEADS:', error);
-      return res.status(500).json({ error: error.message });
+    // ── Incremental mode: returns only leads changed since `after` ──
+    if (after) {
+      const fields = lite === '1' ? LEADS_LITE_FIELDS : '*';
+      let q = supabase.from('leads').select(fields)
+        .eq('cliente_id', req.cliente_id)
+        .gt('updated_at', after)
+        .order('updated_at', { ascending: false })
+        .limit(500);
+      const { data, error } = await q;
+      if (error) { console.error('❌ GET LEADS incremental:', error); return res.status(500).json({ error: error.message }); }
+      return res.json(data);
     }
 
-    res.json(data);
+    // ── Lite mode (no page param): returns ALL leads with minimal fields for stats ──
+    if (lite === '1' && !page) {
+      const { data, error } = await supabase.from('leads')
+        .select(LEADS_LITE_FIELDS)
+        .eq('cliente_id', req.cliente_id)
+        .order('created_at', { ascending: false })
+        .limit(15000);
+      if (error) { console.error('❌ GET LEADS lite:', error); return res.status(500).json({ error: error.message }); }
+      return res.json(data);
+    }
+
+    // ── Paginated full mode: returns one page of full leads ──
+    const pageNum  = Math.max(1, parseInt(page)     || 1);
+    const perPage  = Math.min(parseInt(per_page)    || 100, 200);
+    const offset   = (pageNum - 1) * perPage;
+
+    let q = supabase.from('leads')
+      .select('*', { count: 'exact' })
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + perPage - 1);
+
+    if (estado)               q = q.eq('estado', estado);
+    if (search && search.trim()) q = q.or(`nombre.ilike.%${search.trim()}%,instagram.ilike.%${search.trim()}%`);
+    if (vista === 'perdidos')  q = q.or('estado.eq.Perdido,and(seguimientos.gte.4,respondio_seguimiento_4.eq.NO)');
+    if (vista === 'activos')   q = q.neq('estado', 'Perdido');
+
+    const now = new Date();
+    if (mes !== undefined && mes !== '') {
+      const m  = parseInt(mes, 10);
+      const yr = now.getFullYear();
+      q = q.gte('created_at', new Date(yr, m, 1).toISOString())
+           .lte('created_at', new Date(yr, m + 1, 0, 23, 59, 59).toISOString());
+    } else if (period) {
+      const offsets = { dia: 0, semana: 7, mes: 30, año: 365 };
+      const days = offsets[period];
+      if (days !== undefined) {
+        const from = new Date(now);
+        if (days === 0) from.setHours(0, 0, 0, 0);
+        else from.setDate(now.getDate() - days);
+        q = q.gte('created_at', from.toISOString());
+      }
+    }
+
+    const { data, error, count } = await q;
+    if (error) { console.error('❌ GET LEADS paged:', error); return res.status(500).json({ error: error.message }); }
+
+    res.json({ leads: data, total: count, page: pageNum, per_page: perPage });
 
   } catch (err) {
     console.error('❌ SERVER:', err);
