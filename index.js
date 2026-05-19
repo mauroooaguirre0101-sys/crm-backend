@@ -35,7 +35,9 @@ async function sendSessionEmail(alumno, sesion, clienteId) {
     : null;
 
   const transporter = nodemailer.createTransport({
-    service: 'gmail',
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
     auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
   });
 
@@ -66,13 +68,17 @@ async function sendSessionEmail(alumno, sesion, clienteId) {
   </div>
 </body></html>`;
 
-  const result = await transporter.sendMail({
-    from: fromAddress,
-    to: alumno.email,
-    subject: `📅 Sesión programada — ${fechaLegible.replace(/^\w/, c => c.toUpperCase())}`,
-    html,
-  });
-  console.log('📧 Email enviado:', result.messageId);
+  try {
+    const result = await transporter.sendMail({
+      from: fromAddress,
+      to: alumno.email,
+      subject: `📅 Sesión programada — ${fechaLegible.replace(/^\w/, c => c.toUpperCase())}`,
+      html,
+    });
+    console.log('📧 Email enviado:', result.messageId);
+  } catch (err) {
+    console.error('📧 Error al enviar email:', err.message);
+  }
 }
 
 // ===============================
