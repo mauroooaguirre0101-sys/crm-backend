@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const { Resend } = require('resend');
 
 const app = express();
 
@@ -13,6 +14,58 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
+
+// 📧 Resend
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+async function sendSessionEmail(alumno, sesion, clienteId) {
+  if (!process.env.RESEND_API_KEY || !alumno?.email) return;
+
+  const nombre = [alumno.nombre, alumno.apellido].filter(Boolean).join(' ') || 'Alumno';
+  const [y, m, d] = sesion.fecha.split('-');
+  const fechaObj = new Date(Number(y), Number(m) - 1, Number(d));
+  const fechaLegible = fechaObj.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const hora = sesion.hora ? sesion.hora.slice(0, 5) : null;
+
+  const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+  const formLink = frontendUrl
+    ? `${frontendUrl}/formulario_semanal.html?cliente_id=${encodeURIComponent(clienteId)}&alumno_id=${encodeURIComponent(alumno.id)}`
+    : null;
+
+  const fromAddress = process.env.RESEND_FROM || 'onboarding@resend.dev';
+
+  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f4f8;font-family:Inter,Arial,sans-serif">
+  <div style="max-width:520px;margin:40px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08)">
+    <div style="background:#0a0b0f;padding:22px 32px">
+      <div style="font-size:17px;font-weight:800;color:#e0b54a;letter-spacing:-.3px">📅 Sesión Programada</div>
+    </div>
+    <div style="padding:28px 32px">
+      <p style="font-size:16px;font-weight:700;margin:0 0 10px;color:#111">Hola ${nombre}!</p>
+      <p style="font-size:14px;color:#555;margin:0 0 22px;line-height:1.6">Tu consultor programó una sesión para vos:</p>
+      <div style="background:#f8f8fb;border:1px solid #e8e8f0;border-left:4px solid #e0b54a;border-radius:10px;padding:16px 20px;margin-bottom:24px">
+        <div style="font-size:11px;color:#999;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px">Fecha y hora</div>
+        <div style="font-size:19px;font-weight:700;color:#111;text-transform:capitalize">${fechaLegible}</div>
+        ${hora ? `<div style="font-size:14px;color:#666;margin-top:4px;font-weight:600">${hora} hs</div>` : ''}
+      </div>
+      ${formLink ? `
+      <p style="font-size:13px;color:#555;margin:0 0 16px;line-height:1.6">Para aprovechar mejor el tiempo, completá tu reporte semanal antes de que empecemos:</p>
+      <a href="${formLink}" style="display:inline-block;background:#e0b54a;color:#000;font-weight:700;font-size:14px;padding:12px 26px;border-radius:8px;text-decoration:none">Completar reporte semanal →</a>
+      ` : ''}
+    </div>
+    <div style="padding:14px 32px 20px;border-top:1px solid #f0f0f0">
+      <p style="font-size:11px;color:#bbb;margin:0">Este mensaje fue enviado automáticamente por tu consultor.</p>
+    </div>
+  </div>
+</body></html>`;
+
+  await resend.emails.send({
+    from: fromAddress,
+    to: alumno.email,
+    subject: `📅 Sesión programada — ${fechaLegible.replace(/^\w/, c => c.toUpperCase())}`,
+    html,
+  });
+}
 
 // ===============================
 // 🔐 LOGIN MULTI-CLIENTE
@@ -1308,6 +1361,13 @@ app.post('/sesiones', validateAccess, async (req, res) => {
     }]).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
+
+    // Enviar email al alumno (no bloqueante)
+    if (alumno_id) {
+      supabase.from('alumnos').select('id,nombre,apellido,email').eq('id', alumno_id).single()
+        .then(({ data: alumno }) => sendSessionEmail(alumno, data, req.cliente_id))
+        .catch(err => console.error('Email sesión error:', err));
+    }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
