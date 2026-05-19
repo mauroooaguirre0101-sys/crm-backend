@@ -15,11 +15,10 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// 📧 Resend
-const resend = new Resend(process.env.RESEND_API_KEY);
-
+// 📧 Resend (lazy — no inicializar al arrancar para no crashear sin la env var)
 async function sendSessionEmail(alumno, sesion, clienteId) {
   if (!process.env.RESEND_API_KEY || !alumno?.email) return;
+  const resend = new Resend(process.env.RESEND_API_KEY);
 
   const nombre = [alumno.nombre, alumno.apellido].filter(Boolean).join(' ') || 'Alumno';
   const [y, m, d] = sesion.fecha.split('-');
