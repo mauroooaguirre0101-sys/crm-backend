@@ -1764,6 +1764,85 @@ app.delete('/laboratorio/:id', validateAccess, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ===============================
+// 📋 FORM TEMPLATES & RESPONSES
+// ===============================
+
+const DEFAULT_QUESTIONS = {
+  onboarding: [
+    { id:'q1', tipo:'text',     titulo:'¿Cómo te llamás?',                                     placeholder:'ej. Juan García',           required:true },
+    { id:'q2', tipo:'text',     titulo:'¿De dónde sos?',                                       placeholder:'ej. Buenos Aires, Argentina', required:false },
+    { id:'q3', tipo:'radio',    titulo:'¿Con cuál cargo te sentís más identificado?',          opciones:['Emprendedor','Empresario','CEO / Director','Freelancer','Profesional independiente','Otro'] },
+    { id:'q4', tipo:'radio',    titulo:'¿Cómo me conociste?',                                  opciones:['Instagram','TikTok','YouTube','Recomendación','Google','Otro'] },
+    { id:'q5', tipo:'radio',    titulo:'¿Qué formato de mi contenido te aporta más?',          opciones:['Reels','Historias','YouTube','Carruseles','Podcast'] },
+    { id:'q6', tipo:'textarea', titulo:'¿Por qué elegiste ese formato?',                       placeholder:'Contame qué te engancha de ese formato…', maxlength:400 },
+    { id:'q7', tipo:'radio',    titulo:'¿Qué tipo de reels te gustan más?',                    opciones:['Reels crudos/simples','Reels editados/producidos','Reels de valor/técnicos','Reels de vida personal','Todos por igual'] },
+    { id:'q8', tipo:'textarea', titulo:'¿Qué hace que mis reels te gusten?',                   placeholder:'Qué tiene de especial…',                maxlength:300 },
+    { id:'q9', tipo:'radio',    titulo:'¿Qué tipo de videos de YouTube te aportan más?',       opciones:['Formato hablando a cámara','Vlogs/día a día','Entrevistas','Tutoriales','No consumo YouTube'] },
+    { id:'q10',tipo:'textarea', titulo:'¿Qué te hizo decir "Sí" y entrar al entrenamiento?',   placeholder:'El momento en que decidiste…',          maxlength:400 },
+    { id:'q11',tipo:'textarea', titulo:'¿Qué te motivó específicamente a tomar acción?',       placeholder:'El detonante final fue…',               maxlength:400 },
+    { id:'q12',tipo:'radio',    titulo:'¿Cuánto tiempo tardaste en decidir trabajar conmigo?', opciones:['Menos de 1 semana','Entre 1 semana y 1 mes','Entre 1 y 3 meses','Más de 3 meses'] },
+    { id:'q13',tipo:'scale',    titulo:'Antes de la llamada de admisión, ¿qué tan convencido estabas de entrar?', min:1, max:10 },
+    { id:'q14',tipo:'checkbox', titulo:'¿Cuáles eran tus principales problemas cuando buscaste mi ayuda?', opciones:['Me sentía vacío a pesar de mi éxito','No tenía propósito','Me sentía solo','Problemas con mi pareja','Me sentía un mal hombre','Otro'] },
+    { id:'q15',tipo:'textarea', titulo:'¿Qué fue lo último que te convenció para tomar acción?', placeholder:'El factor decisivo fue…',             maxlength:400 },
+  ],
+  reporte_semanal: [
+    { id:'q1', tipo:'radio',    titulo:'¿Cómo calificarías tu semana en general?',              opciones:['Muy bien 🔥','Bien ✅','Regular 😐','Difícil ⚠️'] },
+    { id:'q2', tipo:'textarea', titulo:'¿Cómo está tu negocio esta semana?',                    subtitulo:'Un párrafo corto es suficiente.', placeholder:'Esta semana lancé mi nueva propuesta…', maxlength:500 },
+    { id:'q3', tipo:'textarea', titulo:'¿Qué objetivos te planteaste esta semana?',             placeholder:'1. Cerrar al menos 2 ventas…',          maxlength:400 },
+    { id:'q4', tipo:'textarea', titulo:'¿Cuáles lograste? ¿Qué quedó pendiente?',              placeholder:'Cerré 1 venta. El landing quedó al 80%…', maxlength:400 },
+    { id:'q5', tipo:'textarea', titulo:'¿Qué problemas o desafíos encontraste esta semana?',   placeholder:'Me costó hacer seguimiento a los leads…', maxlength:500 },
+    { id:'q6', tipo:'checkbox', titulo:'¿En qué áreas necesitás ayuda específica?',            opciones:['Ventas y cierre','Marketing y adquisición','Operaciones y procesos','Finanzas y pricing','Equipo y delegación','Producto o servicio','Foco y mentalidad'] },
+    { id:'q7', tipo:'radio',    titulo:'¿Implementaste las recomendaciones de la sesión anterior?', opciones:['Sí, todas ✅','Algunas 🔸','Ninguna ❌','Es mi primera vez 🌱'] },
+    { id:'q8', tipo:'textarea', titulo:'¿Querés agregar algo más?',                            subtitulo:'Opcional.',                               placeholder:'Cualquier cosa que quieras que tengamos en cuenta…', maxlength:400 },
+  ],
+};
+
+app.get('/form-template', async (req, res) => {
+  try {
+    const { cliente_id, tipo } = req.query;
+    if (!cliente_id || !tipo) return res.status(400).json({ error: 'Faltan parámetros' });
+    const { data } = await supabase.from('form_templates').select('questions').eq('cliente_id', cliente_id).eq('tipo', tipo).maybeSingle();
+    const saved = data?.questions;
+    res.json({ questions: (Array.isArray(saved) && saved.length > 0) ? saved : (DEFAULT_QUESTIONS[tipo] || []) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/form-template', validateAccess, async (req, res) => {
+  try {
+    const { tipo, questions } = req.body;
+    if (!tipo || !Array.isArray(questions)) return res.status(400).json({ error: 'Datos inválidos' });
+    const { data, error } = await supabase.from('form_templates')
+      .upsert({ cliente_id: req.cliente_id, tipo, questions, updated_at: new Date().toISOString() }, { onConflict: 'cliente_id,tipo' })
+      .select('*').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/form-response', async (req, res) => {
+  try {
+    const { cliente_id, tipo, alumno_nombre, alumno_instagram, responses } = req.body;
+    if (!cliente_id || !tipo) return res.status(400).json({ error: 'Faltan campos obligatorios' });
+    const { data, error } = await supabase.from('form_responses')
+      .insert({ cliente_id, tipo, alumno_nombre: alumno_nombre||'', alumno_instagram: alumno_instagram||'', responses: responses||{} })
+      .select('*').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/form-responses', validateAccess, async (req, res) => {
+  try {
+    const { tipo } = req.query;
+    let q = supabase.from('form_responses').select('*').eq('cliente_id', req.cliente_id).order('submitted_at', { ascending: false });
+    if (tipo) q = q.eq('tipo', tipo);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
