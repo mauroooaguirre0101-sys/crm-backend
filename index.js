@@ -1822,10 +1822,11 @@ app.put('/form-template', validateAccess, async (req, res) => {
 
 app.post('/form-response', async (req, res) => {
   try {
-    const { cliente_id, tipo, alumno_nombre, alumno_instagram, responses } = req.body;
+    const { cliente_id, tipo, alumno_id, alumno_nombre, alumno_instagram, responses } = req.body;
     if (!cliente_id || !tipo) return res.status(400).json({ error: 'Faltan campos obligatorios' });
-    const { data, error } = await supabase.from('form_responses')
-      .insert({ cliente_id, tipo, alumno_nombre: alumno_nombre||'', alumno_instagram: alumno_instagram||'', responses: responses||{} })
+    const row = { cliente_id, tipo, alumno_nombre: alumno_nombre||'', alumno_instagram: alumno_instagram||'', responses: responses||{} };
+    if (alumno_id) row.alumno_id = alumno_id;
+    const { data, error } = await supabase.from('form_responses').insert(row)
       .select('*').single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
