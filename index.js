@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 
 const app = express();
 
@@ -15,14 +15,13 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
-// 📧 Resend (lazy — no inicializar al arrancar para no crashear sin la env var)
+// 📧 Gmail + Nodemailer
 async function sendSessionEmail(alumno, sesion, clienteId) {
-  console.log('📧 sendSessionEmail → alumno:', alumno?.email, '| key:', process.env.RESEND_API_KEY ? 'OK' : 'MISSING');
-  if (!process.env.RESEND_API_KEY || !alumno?.email) {
-    console.log('📧 Skipping: missing key or email');
+  console.log('📧 sendSessionEmail → alumno:', alumno?.email, '| gmail:', process.env.GMAIL_USER ? 'OK' : 'MISSING');
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS || !alumno?.email) {
+    console.log('📧 Skipping: missing config or email');
     return;
   }
-  const resend = new Resend(process.env.RESEND_API_KEY);
 
   const nombre = [alumno.nombre, alumno.apellido].filter(Boolean).join(' ') || 'Alumno';
   const [y, m, d] = sesion.fecha.split('-');
@@ -35,7 +34,12 @@ async function sendSessionEmail(alumno, sesion, clienteId) {
     ? `${frontendUrl}/formulario_semanal.html?cliente_id=${encodeURIComponent(clienteId)}&alumno_id=${encodeURIComponent(alumno.id)}`
     : null;
 
-  const fromAddress = process.env.RESEND_FROM || 'onboarding@resend.dev';
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
+  });
+
+  const fromAddress = `CRM Sesiones <${process.env.GMAIL_USER}>`;
 
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#f4f4f8;font-family:Inter,Arial,sans-serif">
@@ -62,13 +66,13 @@ async function sendSessionEmail(alumno, sesion, clienteId) {
   </div>
 </body></html>`;
 
-  const result = await resend.emails.send({
+  const result = await transporter.sendMail({
     from: fromAddress,
     to: alumno.email,
     subject: `📅 Sesión programada — ${fechaLegible.replace(/^\w/, c => c.toUpperCase())}`,
     html,
   });
-  console.log('📧 Resend result:', JSON.stringify(result));
+  console.log('📧 Email enviado:', result.messageId);
 }
 
 // ===============================
