@@ -17,7 +17,11 @@ const supabase = createClient(
 
 // 📧 Resend (lazy — no inicializar al arrancar para no crashear sin la env var)
 async function sendSessionEmail(alumno, sesion, clienteId) {
-  if (!process.env.RESEND_API_KEY || !alumno?.email) return;
+  console.log('📧 sendSessionEmail → alumno:', alumno?.email, '| key:', process.env.RESEND_API_KEY ? 'OK' : 'MISSING');
+  if (!process.env.RESEND_API_KEY || !alumno?.email) {
+    console.log('📧 Skipping: missing key or email');
+    return;
+  }
   const resend = new Resend(process.env.RESEND_API_KEY);
 
   const nombre = [alumno.nombre, alumno.apellido].filter(Boolean).join(' ') || 'Alumno';
@@ -58,12 +62,13 @@ async function sendSessionEmail(alumno, sesion, clienteId) {
   </div>
 </body></html>`;
 
-  await resend.emails.send({
+  const result = await resend.emails.send({
     from: fromAddress,
     to: alumno.email,
     subject: `📅 Sesión programada — ${fechaLegible.replace(/^\w/, c => c.toUpperCase())}`,
     html,
   });
+  console.log('📧 Resend result:', JSON.stringify(result));
 }
 
 // ===============================
