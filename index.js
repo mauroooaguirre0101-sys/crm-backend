@@ -186,7 +186,7 @@ const LEADS_LITE_FIELDS = [
 
 app.get('/leads', validateAccess, async (req, res) => {
   try {
-    const { after, lite, page, per_page, estado, search, period, mes, vista } = req.query;
+    const { after, lite, page, per_page, estado, search, period, mes, vista, sort_by, sort_dir } = req.query;
 
     // ── Incremental mode: returns only leads changed since `after` ──
     if (after) {
@@ -217,10 +217,12 @@ app.get('/leads', validateAccess, async (req, res) => {
     const perPage  = Math.min(parseInt(per_page)    || 100, 200);
     const offset   = (pageNum - 1) * perPage;
 
+    const orderField = sort_by === 'updated_at' ? 'updated_at' : 'created_at';
+    const ascending  = sort_dir === 'asc';
     let q = supabase.from('leads')
       .select('*', { count: 'exact' })
       .eq('cliente_id', req.cliente_id)
-      .order('created_at', { ascending: false })
+      .order(orderField, { ascending })
       .range(offset, offset + perPage - 1);
 
     if (estado)               q = q.eq('estado', estado);
