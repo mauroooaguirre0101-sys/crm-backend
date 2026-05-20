@@ -280,8 +280,8 @@ app.post('/leads', validateAccess, async (req, res) => {
     const coreRow = {
       nombre:        nombre.trim(),
       instagram:     instagram ? instagram.trim().replace(/^@/, '').toLowerCase() : '',
-      origen:        origen || 'Inbound',
-      tipo:          tipo || 'Organico',
+      origen:        ['Inbound','Outbound'].includes(origen) ? origen : 'Inbound',
+      tipo:          ['Ads','Organico','Outbound','Seguidor'].includes(tipo) ? tipo : 'Organico',
       etiqueta:      etiqueta || '',
       estado:        estado || 'Primer contacto',
       ultima_accion: ultima_accion || '',
@@ -603,7 +603,8 @@ app.post('/lead', validateAccess, async (req, res) => {
       nombre && !nombre.includes('{{') ? nombre : 'Sin nombre';
 
     const tipoFinal = tipo || 'comentario';
-    const origenFinal = origen || 'Inbound';
+    const ALLOWED_ORIGEN = ['Inbound', 'Outbound'];
+    const origenFinal = ALLOWED_ORIGEN.includes(origen) ? origen : 'Inbound';
     const etiquetaFinal = etiqueta || '';
     const tipoLead = tipoFinal === 'seguidor' ? 'Seguidor' : 'Organico';
     const now = new Date().toISOString();
@@ -645,7 +646,7 @@ app.post('/lead', validateAccess, async (req, res) => {
           ultima_accion: mensaje || '',
           origen: origenFinal,
           tipo: tipoLead,
-          estado: 'Primer Contacto',
+          estado: 'Primer contacto',
           etiqueta: etiquetaFinal,
           etiquetas: etiquetaFinal ? [etiquetaFinal] : [],
           source: 'manychat',
