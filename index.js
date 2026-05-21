@@ -1523,6 +1523,14 @@ app.post('/sops', validateAccess, async (req, res) => {
     res.json({ ...req.body, id: data.id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.patch('/sops/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('sops').update({ data: req.body }).eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/sops/:id', validateAccess, async (req, res) => {
   try {
     const { error } = await supabase.from('sops').delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
