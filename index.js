@@ -186,7 +186,7 @@ const LEADS_LITE_FIELDS = [
 
 app.get('/leads', validateAccess, async (req, res) => {
   try {
-    const { after, lite, page, per_page, estado, search, period, mes, vista, sort_by, sort_dir } = req.query;
+    const { after, lite, page, per_page, estado, search, period, mes, vista, sort_by, sort_dir, etiqueta_filter } = req.query;
 
     // ── Incremental mode: returns only leads changed since `after` ──
     if (after) {
@@ -227,6 +227,10 @@ app.get('/leads', validateAccess, async (req, res) => {
 
     if (estado)               q = q.eq('estado', estado);
     if (search && search.trim()) q = q.or(`nombre.ilike.%${search.trim()}%,instagram.ilike.%${search.trim()}%`);
+    if (etiqueta_filter && etiqueta_filter.trim()) {
+      const ef = etiqueta_filter.trim();
+      q = q.or(`etiqueta.eq.${ef},etiquetas.cs.{"${ef}"}`);
+    }
     if (vista === 'perdidos')  q = q.or('estado.eq.Perdido,and(seguimientos.gte.4,respondio_seguimiento_4.eq.NO)');
     if (vista === 'activos')   q = q.neq('estado', 'Perdido');
 
