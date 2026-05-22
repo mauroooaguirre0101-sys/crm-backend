@@ -425,7 +425,7 @@ app.get('/calls', validateAccess, async (req, res) => {
 // ===============================
 app.post('/call/precall', validateAccess, async (req, res) => {
   try {
-    const { nombre, instagram, whatsapp, info_previa } = req.body;
+    const { nombre, instagram, whatsapp, info_previa, origen } = req.body;
 
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
@@ -450,6 +450,7 @@ app.post('/call/precall', validateAccess, async (req, res) => {
         instagram,
         whatsapp: whatsapp || '',
         info_previa: info_previa || '',
+        origen: origen || '',
         estado: 'Pendiente',
         numero_llamada,
         seguimientos: 0,
@@ -484,7 +485,9 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       seguimientos,
       responde,
       link_llamada,
-      reporte
+      reporte,
+      info_previa,
+      reporte_ghl
     } = req.body;
 
     motivo_no_cierre = motivo_no_cierre || '';
@@ -509,16 +512,19 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       return res.status(404).json({ error: 'Call no encontrada' });
     }
 
+    const patch = {};
+    if (estado           !== undefined) patch.estado            = estado;
+    if (motivo_no_cierre !== undefined) patch.motivo_no_cierre  = motivo_no_cierre;
+    if (seguimientos     !== undefined) patch.seguimientos       = seguimientos;
+    if (responde         !== undefined) patch.responde           = responde;
+    if (link_llamada     !== undefined) patch.link_llamada       = link_llamada;
+    if (reporte          !== undefined) patch.reporte            = reporte;
+    if (info_previa      !== undefined) patch.info_previa        = info_previa;
+    if (reporte_ghl      !== undefined) patch.reporte_ghl        = reporte_ghl;
+
     const { error } = await supabase
       .from('calls')
-      .update({
-        estado,
-        motivo_no_cierre,
-        seguimientos,
-        responde,
-        link_llamada,
-        reporte
-      })
+      .update(patch)
       .eq('id', id)
       .eq('cliente_id', req.cliente_id);
 
