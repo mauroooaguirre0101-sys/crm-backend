@@ -1981,6 +1981,8 @@ app.get('/ai/config', validateAccess, async (req, res) => {
       .from('ai_config')
       .select('*')
       .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
     res.json(data || { system_prompt: '', custom_context: '' });
   } catch (err) {
@@ -1991,15 +1993,31 @@ app.get('/ai/config', validateAccess, async (req, res) => {
 app.patch('/ai/config', validateAccess, async (req, res) => {
   try {
     const { system_prompt, custom_context } = req.body;
-    const { data, error } = await supabase
+    const payload = { system_prompt: system_prompt || '', custom_context: custom_context || '' };
+
+    const { data: existing } = await supabase
       .from('ai_config')
-      .upsert(
-        { cliente_id: req.cliente_id, system_prompt: system_prompt || '', custom_context: custom_context || '' },
-        { onConflict: 'cliente_id' }
-      )
-      .select('*').single();
-    if (error) return res.status(500).json({ error: error.message });
-    res.json(data);
+      .select('id')
+      .eq('cliente_id', req.cliente_id)
+      .limit(1)
+      .maybeSingle();
+
+    let result;
+    if (existing?.id) {
+      result = await supabase
+        .from('ai_config')
+        .update(payload)
+        .eq('id', existing.id)
+        .select('*').single();
+    } else {
+      result = await supabase
+        .from('ai_config')
+        .insert({ cliente_id: req.cliente_id, ...payload })
+        .select('*').single();
+    }
+
+    if (result.error) return res.status(500).json({ error: result.error.message });
+    res.json(result.data);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
