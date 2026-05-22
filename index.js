@@ -976,7 +976,7 @@ app.get('/metrics', async (req, res) => {
       const closes         = l.filter(x => x.estado === 'Cerrado' || x.estado === 'Seña').length;
       const senas          = l.filter(x => x.estado === 'Seña').length;
       const totalCalls     = c.length;
-      const shows          = c.filter(x => x.estado !== 'No asistió' && x.estado !== 'Re agenda').length;
+      const shows          = c.filter(x => x.estado !== 'No asistió' && x.estado !== 'Re agenda' && x.estado !== 'Pendiente').length;
       const facturacion    = cl.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0);
       const cash_collected = facturacion;
       const aov            = closes > 0 ? Math.round(facturacion / closes) : 0;
