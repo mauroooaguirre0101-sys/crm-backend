@@ -202,36 +202,38 @@ Para preguntas de seguimiento respondés de forma conversacional y directa, sin 
 
 const CHAT_BASE_SYSTEM = `Sos un analista estratégico de ventas especializado en conversaciones de prospección por chat (Instagram DM, WhatsApp, etc.) para negocios de alto ticket en el mercado hispanohablante. Tu trabajo es analizar conversaciones entre setters/vendedores y leads para identificar oportunidades, errores y estrategias de mejora.
 
-Cuando analizás una conversación por primera vez, estructurás la respuesta con estas secciones usando markdown:
+REGLA FUNDAMENTAL: Siempre respondés con valor concreto, sin importar cuánta información tengas. Si tenés el chat completo, analizás en detalle. Si tenés solo contexto, descripción o una situación parcial, igualmente dás insights accionables, estrategia y recomendaciones basadas en lo que se compartió. Nunca pedís más información antes de responder — primero analizás con lo que hay, y al final podés sugerir qué más ayudaría.
+
+Cuando analizás una conversación por primera vez, usás las secciones que apliquen según la información disponible. Si hay poco contexto, priorizás las secciones más útiles y las otras las omitís o las respondés con lo que se puede inferir:
 
 ## Resumen ejecutivo
-(2-3 oraciones: contexto del chat, etapa del embudo, estado actual del lead)
+(contexto del chat, etapa del embudo, estado actual del lead — con lo que haya)
 
 ## Objeciones detectadas
-(bullets con cita textual + tipo: precio / tiempo / desconfianza / no necesita / etc. + si fue manejada correctamente)
+(si hay mensajes: bullets con cita + tipo + cómo se manejó. Si es solo contexto: objeciones probables para esta situación)
 
 ## Errores del setter/vendedor
-(bullets: mensajes que generaron fricción, oportunidades perdidas, presión mal timed, falta de preguntas de descubrimiento)
+(mensajes que generaron fricción, oportunidades perdidas, presión mal timed — o errores probables si no hay chat literal)
 
 ## Análisis emocional del lead
-(tono dominante, evolución emocional a lo largo del chat, señales de interés real vs. cortesía)
+(tono dominante y señales de interés según lo compartido)
 
 ## Nivel de interés y calificación
-(puntuación 1-10 con justificación, si vale continuar el seguimiento, etapa del embudo recomendada)
+(puntuación 1-10 con justificación, si vale continuar)
 
 ## Señales de compra detectadas
-(bullets con las señales positivas concretas)
+(señales positivas concretas del chat o del contexto dado)
 
 ## Oportunidades perdidas
-(bullets: momentos en que el setter debería haber actuado diferente)
+(momentos donde se debería haber actuado diferente — o qué no hacer en esta situación)
 
 ## Mejores respuestas recomendadas
-(para los mensajes que fallaron, escribí versiones mejoradas manteniendo el tono natural)
+(versiones mejoradas de mensajes fallidos, o respuestas ideales para la situación descrita)
 
 ## Estrategia de seguimiento
-(mensaje recomendado para el próximo contacto, cuándo enviarlo y por qué)
+(mensaje concreto recomendado para el próximo contacto, cuándo enviarlo y por qué)
 
-Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa a menos que se pida explícitamente. Si hay imágenes en el análisis inicial, las describís y analizás también. Siempre respondés en español.`;
+Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa. Si hay imágenes, las analizás también. Siempre respondés en español.`;
 
 // 🟢 Test
 app.get('/', (req, res) => {
@@ -2382,8 +2384,10 @@ app.post('/ai/chat-followup', validateAccess, async (req, res) => {
   try {
     if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada' });
 
-    const { analysis_id, message, messages: clientMessages } = req.body;
-    if (!message?.trim()) return res.status(400).json({ error: 'Mensaje vacío' });
+    const { analysis_id, message, images, messages: clientMessages } = req.body;
+    if (!message?.trim() && (!images || images.length === 0)) {
+      return res.status(400).json({ error: 'Enviá un mensaje o una imagen' });
+    }
 
     let conversationHistory = clientMessages || [];
 
@@ -2411,17 +2415,36 @@ app.post('/ai/chat-followup', validateAccess, async (req, res) => {
       systemPrompt += `\n\n## INSTRUCCIONES ADICIONALES\n${aiConf.chat_system_prompt.trim()}`;
     }
 
-    const updatedMessages = [...conversationHistory, { role: 'user', content: message.trim() }];
+    // Build user content — text + optional images
+    let userContentForAPI;
+    if (images && images.length > 0) {
+      const blocks = [];
+      for (const img of images) {
+        blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType || 'image/jpeg', data: img.base64 } });
+      }
+      const text = message?.trim() || 'Analizá esta imagen en el contexto de la conversación.';
+      blocks.push({ type: 'text', text });
+      userContentForAPI = blocks;
+    } else {
+      userContentForAPI = message.trim();
+    }
+
+    // For DB: strip base64, store as plain text
+    const imgNote = images?.length > 0 ? `[${images.length} imagen(es)]\n` : '';
+    const userContentForDB = `${imgNote}${message?.trim() || ''}`.trim();
+
+    const updatedMessagesForDB = [...conversationHistory, { role: 'user', content: userContentForDB }];
+    const apiMessages = [...conversationHistory, { role: 'user', content: userContentForAPI }];
 
     const completion = await _anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       system: systemPrompt,
-      messages: updatedMessages
+      messages: apiMessages
     });
 
     const assistantResponse = completion.content[0].text;
-    const finalMessages = [...updatedMessages, { role: 'assistant', content: assistantResponse }];
+    const finalMessages = [...updatedMessagesForDB, { role: 'assistant', content: assistantResponse }];
 
     if (analysis_id) {
       await supabase
