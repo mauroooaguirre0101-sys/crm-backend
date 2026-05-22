@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const nodemailer = require('nodemailer');
+const Anthropic = require('@anthropic-ai/sdk');
 
 const app = express();
 
@@ -166,6 +167,38 @@ async function checkAccess(req) {
   }
   return { ok: true, cliente_id, user: data };
 }
+
+// 🤖 Anthropic client (initialized lazily from env var)
+const _anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+
+const AI_BASE_SYSTEM = `Eres un analista estratégico de ventas de alto ticket especializado en el mercado hispanohablante. Tu rol es analizar transcripts de llamadas de ventas y actuar como un consultor experto.
+
+Cuando analizás un transcript por primera vez, estructurás la respuesta con estas secciones usando markdown:
+
+## Resumen ejecutivo
+(2-3 oraciones sobre la llamada)
+
+## Dolores principales detectados
+(lista de bullets con los problemas que mencionó el prospecto)
+
+## Objeciones identificadas
+(lista de bullets con objeciones concretas que dijo o insinuó)
+
+## Nivel de interés
+(número del 1 al 10 con justificación de 1-2 oraciones)
+
+## Señales de compra
+(bullets con señales positivas)
+
+## Señales de alerta
+(bullets con señales de riesgo o rechazo)
+
+## Próximos pasos recomendados
+(bullets con acciones concretas priorizadas)
+
+Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa a menos que se pida explícitamente. Siempre respondés en español.`;
 
 // 🟢 Test
 app.get('/', (req, res) => {
@@ -1937,6 +1970,204 @@ app.get('/form-responses', validateAccess, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     res.json(data || []);
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
+// 🤖 IA — CONFIG
+// ===============================
+app.get('/ai/config', validateAccess, async (req, res) => {
+  try {
+    const { data } = await supabase
+      .from('ai_config')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+    res.json(data || { system_prompt: '', custom_context: '' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/ai/config', validateAccess, async (req, res) => {
+  try {
+    const { system_prompt, custom_context } = req.body;
+    const { data, error } = await supabase
+      .from('ai_config')
+      .upsert(
+        { cliente_id: req.cliente_id, system_prompt: system_prompt || '', custom_context: custom_context || '' },
+        { onConflict: 'cliente_id' }
+      )
+      .select('*').single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 🤖 IA — ANALIZAR TRANSCRIPT
+// ===============================
+app.post('/ai/analyze', validateAccess, async (req, res) => {
+  try {
+    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada en el servidor' });
+
+    const { transcript, call_id } = req.body;
+    if (!transcript || transcript.trim().length < 30) {
+      return res.status(400).json({ error: 'El transcript está vacío o es muy corto' });
+    }
+
+    const { data: aiConf } = await supabase
+      .from('ai_config')
+      .select('system_prompt, custom_context')
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+
+    let systemPrompt = AI_BASE_SYSTEM;
+    if (aiConf?.custom_context?.trim()) {
+      systemPrompt += `\n\n## CONTEXTO DEL NEGOCIO\n${aiConf.custom_context.trim()}`;
+    }
+    if (aiConf?.system_prompt?.trim()) {
+      systemPrompt += `\n\n## INSTRUCCIONES ADICIONALES\n${aiConf.system_prompt.trim()}`;
+    }
+
+    const userMessage = `Por favor analizá el siguiente transcript de llamada de ventas:\n\n---\n${transcript.trim()}\n---`;
+
+    const completion = await _anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }]
+    });
+
+    const assistantResponse = completion.content[0].text;
+    const messages = [
+      { role: 'user', content: userMessage },
+      { role: 'assistant', content: assistantResponse }
+    ];
+
+    const insertData = { cliente_id: req.cliente_id, transcript: transcript.trim(), messages };
+    if (call_id) insertData.call_id = call_id;
+
+    const { data: saved, error: saveErr } = await supabase
+      .from('call_analyses')
+      .insert(insertData)
+      .select('id, created_at')
+      .single();
+
+    if (saveErr) {
+      console.error('❌ AI SAVE:', saveErr);
+      return res.json({ id: null, response: assistantResponse, messages });
+    }
+
+    res.json({ id: saved.id, response: assistantResponse, messages, created_at: saved.created_at });
+  } catch (err) {
+    console.error('❌ AI ANALYZE:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 🤖 IA — CHAT FOLLOW-UP
+// ===============================
+app.post('/ai/chat', validateAccess, async (req, res) => {
+  try {
+    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada en el servidor' });
+
+    const { analysis_id, message, messages: clientMessages } = req.body;
+    if (!message?.trim()) return res.status(400).json({ error: 'Mensaje vacío' });
+
+    let conversationHistory = clientMessages || [];
+
+    if (analysis_id) {
+      const { data: analysis } = await supabase
+        .from('call_analyses')
+        .select('messages')
+        .eq('id', analysis_id)
+        .eq('cliente_id', req.cliente_id)
+        .maybeSingle();
+      if (analysis?.messages) conversationHistory = analysis.messages;
+    }
+
+    const { data: aiConf } = await supabase
+      .from('ai_config')
+      .select('system_prompt, custom_context')
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+
+    let systemPrompt = AI_BASE_SYSTEM;
+    if (aiConf?.custom_context?.trim()) {
+      systemPrompt += `\n\n## CONTEXTO DEL NEGOCIO\n${aiConf.custom_context.trim()}`;
+    }
+    if (aiConf?.system_prompt?.trim()) {
+      systemPrompt += `\n\n## INSTRUCCIONES ADICIONALES\n${aiConf.system_prompt.trim()}`;
+    }
+
+    const updatedMessages = [...conversationHistory, { role: 'user', content: message.trim() }];
+
+    const completion = await _anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: updatedMessages
+    });
+
+    const assistantResponse = completion.content[0].text;
+    const finalMessages = [...updatedMessages, { role: 'assistant', content: assistantResponse }];
+
+    if (analysis_id) {
+      await supabase
+        .from('call_analyses')
+        .update({ messages: finalMessages, updated_at: new Date().toISOString() })
+        .eq('id', analysis_id)
+        .eq('cliente_id', req.cliente_id);
+    }
+
+    res.json({ response: assistantResponse, messages: finalMessages });
+  } catch (err) {
+    console.error('❌ AI CHAT:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 🤖 IA — LISTAR ANÁLISIS
+// ===============================
+app.get('/ai/analyses', validateAccess, async (req, res) => {
+  try {
+    const { call_id } = req.query;
+    let q = supabase
+      .from('call_analyses')
+      .select('id, call_id, created_at, updated_at, transcript')
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (call_id) q = q.eq('call_id', call_id);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 🤖 IA — OBTENER ANÁLISIS
+// ===============================
+app.get('/ai/analyses/:id', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('call_analyses')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Análisis no encontrado' });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 🚀 SERVER
