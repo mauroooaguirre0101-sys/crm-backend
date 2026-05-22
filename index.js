@@ -8,7 +8,7 @@ const app = express();
 
 // ✅ Middlewares
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 // 🔑 Supabase
 const supabase = createClient(
@@ -199,6 +199,39 @@ Cuando analizás un transcript por primera vez, estructurás la respuesta con es
 (bullets con acciones concretas priorizadas)
 
 Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa a menos que se pida explícitamente. Siempre respondés en español.`;
+
+const CHAT_BASE_SYSTEM = `Sos un analista estratégico de ventas especializado en conversaciones de prospección por chat (Instagram DM, WhatsApp, etc.) para negocios de alto ticket en el mercado hispanohablante. Tu trabajo es analizar conversaciones entre setters/vendedores y leads para identificar oportunidades, errores y estrategias de mejora.
+
+Cuando analizás una conversación por primera vez, estructurás la respuesta con estas secciones usando markdown:
+
+## Resumen ejecutivo
+(2-3 oraciones: contexto del chat, etapa del embudo, estado actual del lead)
+
+## Objeciones detectadas
+(bullets con cita textual + tipo: precio / tiempo / desconfianza / no necesita / etc. + si fue manejada correctamente)
+
+## Errores del setter/vendedor
+(bullets: mensajes que generaron fricción, oportunidades perdidas, presión mal timed, falta de preguntas de descubrimiento)
+
+## Análisis emocional del lead
+(tono dominante, evolución emocional a lo largo del chat, señales de interés real vs. cortesía)
+
+## Nivel de interés y calificación
+(puntuación 1-10 con justificación, si vale continuar el seguimiento, etapa del embudo recomendada)
+
+## Señales de compra detectadas
+(bullets con las señales positivas concretas)
+
+## Oportunidades perdidas
+(bullets: momentos en que el setter debería haber actuado diferente)
+
+## Mejores respuestas recomendadas
+(para los mensajes que fallaron, escribí versiones mejoradas manteniendo el tono natural)
+
+## Estrategia de seguimiento
+(mensaje recomendado para el próximo contacto, cuándo enviarlo y por qué)
+
+Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa a menos que se pida explícitamente. Si hay imágenes en el análisis inicial, las describís y analizás también. Siempre respondés en español.`;
 
 // 🟢 Test
 app.get('/', (req, res) => {
@@ -2194,6 +2227,264 @@ app.delete('/ai/analyses/:id', validateAccess, async (req, res) => {
   try {
     const { error } = await supabase
       .from('call_analyses')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 💬 CHAT IA — CONFIG (GET)
+// ===============================
+app.get('/ai/chat-config', validateAccess, async (req, res) => {
+  try {
+    const { data } = await supabase
+      .from('ai_config')
+      .select('chat_system_prompt, chat_custom_context')
+      .eq('cliente_id', req.cliente_id)
+      .limit(1)
+      .maybeSingle();
+    res.json(data || { chat_system_prompt: '', chat_custom_context: '' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 💬 CHAT IA — CONFIG (SAVE)
+// ===============================
+app.patch('/ai/chat-config', validateAccess, async (req, res) => {
+  try {
+    const { chat_system_prompt, chat_custom_context } = req.body;
+    const payload = {
+      chat_system_prompt: chat_system_prompt || '',
+      chat_custom_context: chat_custom_context || ''
+    };
+
+    const { data: existing } = await supabase
+      .from('ai_config')
+      .select('id')
+      .eq('cliente_id', req.cliente_id)
+      .limit(1)
+      .maybeSingle();
+
+    let result;
+    if (existing?.id) {
+      result = await supabase
+        .from('ai_config')
+        .update(payload)
+        .eq('id', existing.id)
+        .select('*').single();
+    } else {
+      result = await supabase
+        .from('ai_config')
+        .insert({ cliente_id: req.cliente_id, ...payload })
+        .select('*').single();
+    }
+
+    if (result.error) return res.status(500).json({ error: result.error.message });
+    res.json(result.data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 💬 CHAT IA — ANALIZAR CHAT
+// ===============================
+app.post('/ai/chat-analyze', validateAccess, async (req, res) => {
+  try {
+    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada en el servidor' });
+
+    const { chat_text, images, lead_id, lead_name } = req.body;
+
+    if ((!chat_text || chat_text.trim().length < 5) && (!images || images.length === 0)) {
+      return res.status(400).json({ error: 'Pegá una conversación o adjuntá al menos un screenshot' });
+    }
+
+    const { data: aiConf } = await supabase
+      .from('ai_config')
+      .select('chat_system_prompt, chat_custom_context')
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+
+    let systemPrompt = CHAT_BASE_SYSTEM;
+    if (aiConf?.chat_custom_context?.trim()) {
+      systemPrompt += `\n\n## CONTEXTO DEL NEGOCIO\n${aiConf.chat_custom_context.trim()}`;
+    }
+    if (aiConf?.chat_system_prompt?.trim()) {
+      systemPrompt += `\n\n## INSTRUCCIONES ADICIONALES\n${aiConf.chat_system_prompt.trim()}`;
+    }
+
+    const contentBlocks = [];
+    if (images && images.length > 0) {
+      for (const img of images) {
+        contentBlocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mediaType || 'image/jpeg', data: img.base64 }
+        });
+      }
+    }
+    const textContent = chat_text?.trim()
+      ? `Por favor analizá la siguiente conversación con un lead:\n\n---\n${chat_text.trim()}\n---`
+      : 'Por favor analizá las imágenes de esta conversación con un lead.';
+    contentBlocks.push({ type: 'text', text: textContent });
+
+    const completion = await _anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: contentBlocks }]
+    });
+
+    const assistantResponse = completion.content[0].text;
+    const imgNote = images?.length > 0 ? `[${images.length} imagen(es) adjunta(s)]\n` : '';
+    const messagesForDB = [
+      { role: 'user', content: `${imgNote}${chat_text?.trim() || ''}`.trim() || textContent },
+      { role: 'assistant', content: assistantResponse }
+    ];
+
+    const insertData = {
+      cliente_id: req.cliente_id,
+      chat_text: chat_text?.trim() || '',
+      has_images: (images?.length || 0) > 0,
+      messages: messagesForDB
+    };
+    if (lead_id) insertData.lead_id = lead_id;
+    if (lead_name) insertData.lead_name = lead_name;
+
+    const { data: saved, error: saveErr } = await supabase
+      .from('chat_analyses')
+      .insert(insertData)
+      .select('id, created_at')
+      .single();
+
+    if (saveErr) {
+      console.error('❌ CHAT AI SAVE:', saveErr);
+      return res.json({ id: null, response: assistantResponse, messages: messagesForDB });
+    }
+
+    res.json({ id: saved.id, response: assistantResponse, messages: messagesForDB, created_at: saved.created_at });
+  } catch (err) {
+    console.error('❌ CHAT AI ANALYZE:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 💬 CHAT IA — FOLLOW-UP
+// ===============================
+app.post('/ai/chat-followup', validateAccess, async (req, res) => {
+  try {
+    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada' });
+
+    const { analysis_id, message, messages: clientMessages } = req.body;
+    if (!message?.trim()) return res.status(400).json({ error: 'Mensaje vacío' });
+
+    let conversationHistory = clientMessages || [];
+
+    if (analysis_id) {
+      const { data: analysis } = await supabase
+        .from('chat_analyses')
+        .select('messages')
+        .eq('id', analysis_id)
+        .eq('cliente_id', req.cliente_id)
+        .maybeSingle();
+      if (analysis?.messages) conversationHistory = analysis.messages;
+    }
+
+    const { data: aiConf } = await supabase
+      .from('ai_config')
+      .select('chat_system_prompt, chat_custom_context')
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+
+    let systemPrompt = CHAT_BASE_SYSTEM;
+    if (aiConf?.chat_custom_context?.trim()) {
+      systemPrompt += `\n\n## CONTEXTO DEL NEGOCIO\n${aiConf.chat_custom_context.trim()}`;
+    }
+    if (aiConf?.chat_system_prompt?.trim()) {
+      systemPrompt += `\n\n## INSTRUCCIONES ADICIONALES\n${aiConf.chat_system_prompt.trim()}`;
+    }
+
+    const updatedMessages = [...conversationHistory, { role: 'user', content: message.trim() }];
+
+    const completion = await _anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: updatedMessages
+    });
+
+    const assistantResponse = completion.content[0].text;
+    const finalMessages = [...updatedMessages, { role: 'assistant', content: assistantResponse }];
+
+    if (analysis_id) {
+      await supabase
+        .from('chat_analyses')
+        .update({ messages: finalMessages, updated_at: new Date().toISOString() })
+        .eq('id', analysis_id)
+        .eq('cliente_id', req.cliente_id);
+    }
+
+    res.json({ response: assistantResponse, messages: finalMessages });
+  } catch (err) {
+    console.error('❌ CHAT FOLLOWUP:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 💬 CHAT IA — LISTAR ANÁLISIS
+// ===============================
+app.get('/ai/chat-analyses', validateAccess, async (req, res) => {
+  try {
+    const { lead_id } = req.query;
+    let q = supabase
+      .from('chat_analyses')
+      .select('id, lead_id, lead_name, has_images, created_at, updated_at, chat_text')
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (lead_id) q = q.eq('lead_id', lead_id);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 💬 CHAT IA — OBTENER ANÁLISIS
+// ===============================
+app.get('/ai/chat-analyses/:id', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('chat_analyses')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Análisis no encontrado' });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===============================
+// 💬 CHAT IA — ELIMINAR ANÁLISIS
+// ===============================
+app.delete('/ai/chat-analyses/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('chat_analyses')
       .delete()
       .eq('id', req.params.id)
       .eq('cliente_id', req.cliente_id);
