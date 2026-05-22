@@ -2170,6 +2170,23 @@ app.get('/ai/analyses/:id', validateAccess, async (req, res) => {
   }
 });
 
+// ===============================
+// 🤖 IA — ELIMINAR ANÁLISIS
+// ===============================
+app.delete('/ai/analyses/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('call_analyses')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
