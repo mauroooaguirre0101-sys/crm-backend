@@ -1981,7 +1981,6 @@ app.get('/ai/config', validateAccess, async (req, res) => {
       .from('ai_config')
       .select('*')
       .eq('cliente_id', req.cliente_id)
-      .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
     res.json(data || { system_prompt: '', custom_context: '' });
