@@ -2519,6 +2519,62 @@ app.delete('/ai/chat-analyses/:id', validateAccess, async (req, res) => {
 });
 
 // ========== TAREAS POR NEGOCIO ==========
+async function sendTaskNotification(emails, taskTitle, clienteId, recursos, descripcion) {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_PASS || !emails?.length) return;
+  const transporter = require('nodemailer').createTransport({
+    host: 'smtp.gmail.com', port: 465, secure: true,
+    auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
+  });
+  const recursosHtml = recursos
+    ? `<div style="margin-top:14px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#999;margin-bottom:6px">Recursos</div><div style="font-size:13px;color:#555;white-space:pre-wrap">${recursos.replace(/</g,'&lt;')}</div></div>`
+    : '';
+  const descHtml = descripcion
+    ? `<p style="font-size:14px;color:#555;margin:12px 0 0;line-height:1.6">${descripcion.replace(/</g,'&lt;')}</p>`
+    : '';
+  for (const email of emails) {
+    try {
+      await transporter.sendMail({
+        from: `CRM <${process.env.GMAIL_USER}>`,
+        to: email,
+        subject: `✅ Nueva tarea asignada: ${taskTitle}`,
+        html: `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f4f4f8;font-family:Inter,Arial,sans-serif">
+  <div style="max-width:520px;margin:40px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08)">
+    <div style="background:#0a0b0f;padding:22px 32px">
+      <div style="font-size:17px;font-weight:800;color:#e0b54a">✅ Nueva tarea asignada</div>
+    </div>
+    <div style="padding:28px 32px">
+      <p style="font-size:14px;color:#555;margin:0 0 18px">Te asignaron una tarea en el CRM:</p>
+      <div style="background:#f8f8fb;border:1px solid #e8e8f0;border-left:4px solid #e0b54a;border-radius:10px;padding:16px 20px">
+        <div style="font-size:18px;font-weight:700;color:#111">${taskTitle.replace(/</g,'&lt;')}</div>
+        ${descHtml}
+        ${recursosHtml}
+      </div>
+    </div>
+    <div style="padding:14px 32px 20px;border-top:1px solid #f0f0f0">
+      <p style="font-size:11px;color:#bbb;margin:0">Negocio: ${clienteId}</p>
+    </div>
+  </div>
+</body></html>`,
+      });
+    } catch(e) {
+      console.error('📧 Error notif tarea:', e.message);
+    }
+  }
+}
+
+app.get('/tasks/users', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('user_clientes')
+      .select('user_email, role')
+      .eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(u => ({ email: u.user_email, role: u.role })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/tasks', validateAccess, async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -2535,7 +2591,7 @@ app.get('/tasks', validateAccess, async (req, res) => {
 
 app.post('/tasks', validateAccess, async (req, res) => {
   try {
-    const { titulo, descripcion, columna, area, prioridad, responsable, fecha_limite } = req.body;
+    const { titulo, descripcion, columna, area, prioridad, responsable, fecha_limite, recursos } = req.body;
     if (!titulo?.trim()) return res.status(400).json({ error: 'El título es obligatorio' });
     const { data, error } = await supabase
       .from('negocio_tasks')
@@ -2546,12 +2602,16 @@ app.post('/tasks', validateAccess, async (req, res) => {
         columna: columna || 'por_hacer',
         area: area || null,
         prioridad: prioridad || null,
-        responsable: responsable?.trim() || null,
+        responsable: responsable || null,
         fecha_limite: fecha_limite || null,
+        recursos: recursos?.trim() || null,
       })
       .select()
       .single();
     if (error) return res.status(500).json({ error: error.message });
+    let emails = [];
+    try { emails = responsable ? JSON.parse(responsable) : []; } catch {}
+    sendTaskNotification(emails, titulo.trim(), req.cliente_id, recursos?.trim(), descripcion?.trim());
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2560,9 +2620,24 @@ app.post('/tasks', validateAccess, async (req, res) => {
 
 app.patch('/tasks/:id', validateAccess, async (req, res) => {
   try {
-    const allowed = ['titulo','descripcion','columna','area','prioridad','responsable','fecha_limite'];
+    const allowed = ['titulo','descripcion','columna','area','prioridad','responsable','fecha_limite','recursos'];
     const updates = {};
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+    // Detect newly added responsables to notify them
+    let prevEmails = [];
+    if (updates.responsable !== undefined) {
+      const { data: prev } = await supabase.from('negocio_tasks').select('responsable,titulo,descripcion,recursos').eq('id', req.params.id).single();
+      try { prevEmails = prev?.responsable ? JSON.parse(prev.responsable) : []; } catch {}
+      let newEmails = [];
+      try { newEmails = updates.responsable ? JSON.parse(updates.responsable) : []; } catch {}
+      const added = newEmails.filter(e => !prevEmails.includes(e));
+      if (added.length) {
+        const titulo = updates.titulo || prev?.titulo || '';
+        const recursos = updates.recursos !== undefined ? updates.recursos : prev?.recursos;
+        const descripcion = updates.descripcion !== undefined ? updates.descripcion : prev?.descripcion;
+        sendTaskNotification(added, titulo, req.cliente_id, recursos, descripcion);
+      }
+    }
     const { data, error } = await supabase
       .from('negocio_tasks')
       .update(updates)
