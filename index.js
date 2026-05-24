@@ -3001,6 +3001,12 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     const egresoTotal   = egresosCur.reduce((s, e) => s + (Number(e.usd) || 0), 0);
     const showsCount    = callsCur.filter(c => !['No asistió', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
     const aov           = cerradosNow.length > 0 ? Math.round(facturacion / cerradosNow.length) : 0;
+    const seguidoresNow = piezas
+      .filter(p => p.fecha >= fecha_inicio && p.fecha <= fecha_fin)
+      .reduce((s, p) => s + (Number(p.seguidores_nuevos) || 0), 0);
+    const seguidoresPrev = piezas
+      .filter(p => p.fecha >= prevStartDate && p.fecha <= prevEndDate)
+      .reduce((s, p) => s + (Number(p.seguidores_nuevos) || 0), 0);
 
     // ── Métricas semana anterior ──
     const cerradosPrev       = leadsPrev.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
@@ -3016,12 +3022,14 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     // ── Comparativa ──
     const comparativa = {
       semana_anterior: {
-        leads:          leadsPrev.length,
-        cerrados:       cerradosPrev.length,
-        facturacion:    facturacionPrev,
-        cash_collected: cashCollectedPrev,
-        calls:          callsPrev.length,
+        seguidores_nuevos: seguidoresPrev,
+        leads:             leadsPrev.length,
+        cerrados:          cerradosPrev.length,
+        facturacion:       facturacionPrev,
+        cash_collected:    cashCollectedPrev,
+        calls:             callsPrev.length,
       },
+      delta_seguidores:     _reportFmtDelta(seguidoresNow,         seguidoresPrev),
       delta_leads:          _reportFmtDelta(leadsNow.length,       leadsPrev.length),
       delta_cerrados:       _reportFmtDelta(cerradosNow.length,    cerradosPrev.length),
       delta_facturacion:    _reportFmtDelta(facturacion,           facturacionPrev),
@@ -3032,16 +3040,17 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     // ── Objeto metricas final ──
     const metricas = {
       ventas: {
-        leads:            leadsNow.length,
-        agendas:          agendasCount,
-        cerrados:         cerradosNow.length,
+        seguidores_nuevos: seguidoresNow,
+        leads:             leadsNow.length,
+        agendas:           agendasCount,
+        cerrados:          cerradosNow.length,
         facturacion,
-        cash_collected:   cashCollected,
-        egresos:          egresoTotal,
+        cash_collected:    cashCollected,
+        egresos:           egresoTotal,
         aov,
-        calls:            callsCur.length,
-        shows:            showsCount,
-        tasa_cierre:      agendasCount > 0 ? Math.round(cerradosNow.length / agendasCount * 100) : 0,
+        calls:             callsCur.length,
+        shows:             showsCount,
+        tasa_cierre:       agendasCount > 0 ? Math.round(cerradosNow.length / agendasCount * 100) : 0,
       },
       funnel,
       contenido: {
