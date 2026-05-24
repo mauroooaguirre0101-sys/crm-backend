@@ -2666,6 +2666,541 @@ app.delete('/tasks/:id', validateAccess, async (req, res) => {
   }
 });
 
+// ============================================================
+// 📊 WEEKLY REPORTS — Constantes (espejo de script.js frontend)
+// ============================================================
+
+const REPORT_FUNNEL_FASES = [
+  { label: 'Primer Contacto',  estados: ['Primer contacto'] },
+  { label: 'Descubrimiento',   estados: ['Descubrimiento (Problemas-Objetivos)'] },
+  { label: 'Nutrición',        estados: ['Recurso de nutrición'] },
+  { label: 'Agendamiento',     estados: ['PITCH VSL CHAT', 'VSL CHAT', 'Proponer Call', 'Calendly Enviado'] },
+  { label: 'Cierre',           estados: ['Agendado'] },
+  { label: 'Cerrados',         estados: ['Cerrada', 'Seña'] },
+];
+const REPORT_ESTADO_CERRADO = new Set(['Cerrada', 'Seña']);
+const REPORT_ESTADO_PERDIDO = new Set(['Perdido']);
+
+const WEEKLY_REPORT_SYSTEM = `Sos un analista de negocios especializado en negocios de alto ticket en el mercado hispanohablante. Tu trabajo es analizar las métricas semanales de un negocio y generar un reporte ejecutivo con insights accionables.
+
+Cuando recibís las métricas de la semana, generás un reporte estructurado usando estas secciones en markdown:
+
+## Resumen ejecutivo
+(2-3 oraciones que resumen qué pasó durante la semana en términos de ventas, leads y contenido)
+
+## Métricas destacadas
+(bullets con los números más relevantes y su interpretación en contexto)
+
+## Contenido de mejor rendimiento
+(qué ángulos o piezas funcionaron mejor esta semana y por qué)
+
+## Alertas y puntos de atención
+(qué no funcionó bien, qué empeoró respecto a la semana anterior, riesgos a considerar)
+
+## Recomendaciones para la próxima semana
+(bullets con acciones concretas: contenido a producir, ángulos a reforzar, ajustes en ventas)
+
+## Conclusión
+(1 oración con el diagnóstico general del negocio esta semana)
+
+Sos directo, no usás frases vacías. Priorizás insights accionables sobre observaciones genéricas. Siempre respondés en español rioplatense.`;
+
+// ============================================================
+// 📊 WEEKLY REPORTS — Helpers (port of frontend attribution logic)
+// ============================================================
+
+// Port of _angPiezaLabel(p) — script.js:1455
+function _reportPiezaLabel(piece) {
+  const SHORT = { Historia: 'H', Reel: 'Reel', Carrusel: 'C', YouTube: 'YT' };
+  const t = SHORT[piece.tipo] || piece.tipo || '';
+  const parts = (piece.fecha || '').split('-');
+  const d = parts.length === 3
+    ? `${parseInt(parts[2], 10)}/${parseInt(parts[1], 10)}`
+    : piece.fecha || '—';
+  return `${t} ${d}`.trim();
+}
+
+// Port of _findContentByEtiqueta(etiqueta) — script.js:2001
+// year = report's year (used as primary, year-1 as fallback)
+function _reportFindPieza(etiqueta, allPiezas, year) {
+  if (!etiqueta) return null;
+  const parts = etiqueta.trim().split(/\s+/);
+  if (parts.length < 2) return null;
+  const TIPO_ALIAS = {
+    'H': 'Historia', 'R': 'Reel', 'C': 'Carrusel', 'YT': 'YouTube',
+    'historia': 'Historia', 'reel': 'Reel', 'carrusel': 'Carrusel', 'youtube': 'YouTube',
+  };
+  const tipo = TIPO_ALIAS[parts[0]] || parts[0];
+  const dateStr = parts[1]; // "15/5"
+  const [dayStr, monthStr] = dateStr.split('/');
+  const day = parseInt(dayStr, 10);
+  const month = parseInt(monthStr, 10);
+  if (!day || !month) return null;
+  const pad = n => String(n).padStart(2, '0');
+  const f1 = `${year}-${pad(month)}-${pad(day)}`;
+  const f2 = `${year - 1}-${pad(month)}-${pad(day)}`;
+  return allPiezas.find(x => x.tipo === tipo && x.fecha === f1) ||
+         allPiezas.find(x => x.tipo === tipo && x.fecha === f2) || null;
+}
+
+// Port of _getEtiquetas(lead) — script.js:1994
+function _reportGetEtiquetas(lead) {
+  if (Array.isArray(lead.etiquetas) && lead.etiquetas.length) return lead.etiquetas;
+  if (lead.etiqueta) return [lead.etiqueta];
+  return [];
+}
+
+// Port of _esPerdidoEfectivo(l) — script.js:1794
+function _reportEsPerdido(lead) {
+  return REPORT_ESTADO_PERDIDO.has(lead.estado) ||
+    ((lead.seguimientos || 0) >= 4 && lead.respondio_seguimiento_4 === 'NO');
+}
+
+// Port of renderAng() attribution stats — script.js:1472
+// leads   = leads in the report week
+// piezas  = all contenido for the client (flat, with id + data fields merged)
+// ingresos = ingresos in the report week (for facturación attribution)
+// year    = report's year (for etiqueta date parsing)
+function _buildAtribucion(leads, piezas, ingresos, year) {
+  // Fast lookup: piezaLabel → piece (mirrors _piezaMap in renderAng)
+  const piezaMap = {};
+  piezas.forEach(p => { piezaMap[_reportPiezaLabel(p)] = p; });
+
+  const angStats  = {}; // { angulo: { ventas, agendas, facturacion, calificados, descalificados } }
+  const angPiezas = {}; // { angulo: { piezaLabel: { ventas, agendas } } }
+  const piezaStats = {}; // { pieceId: { ventas, agendas, facturacion, pieza } }
+
+  leads.forEach(lead => {
+    const ets = _reportGetEtiquetas(lead);
+    if (!ets.length) return;
+    const lastEt = ets[ets.length - 1];
+    const pieza = piezaMap[lastEt] || _reportFindPieza(lastEt, piezas, year);
+    if (!pieza || !pieza.angulo) return;
+
+    const ang    = pieza.angulo;
+    const plabel = _reportPiezaLabel(pieza);
+
+    if (!angStats[ang])         angStats[ang]  = { ventas: 0, agendas: 0, facturacion: 0, calificados: 0, descalificados: 0 };
+    if (!angPiezas[ang])        angPiezas[ang] = {};
+    if (!angPiezas[ang][plabel]) angPiezas[ang][plabel] = { ventas: 0, agendas: 0 };
+    if (!piezaStats[pieza.id])  piezaStats[pieza.id] = { ventas: 0, agendas: 0, facturacion: 0, igsClosed: new Set(), pieza };
+
+    if (REPORT_ESTADO_CERRADO.has(lead.estado)) {
+      angStats[ang].ventas++;
+      angPiezas[ang][plabel].ventas++;
+      piezaStats[pieza.id].ventas++;
+      if (lead.instagram) piezaStats[pieza.id].igsClosed.add(lead.instagram.toLowerCase());
+    }
+    if (lead.estado === 'Agendado') {
+      angStats[ang].agendas++;
+      angPiezas[ang][plabel].agendas++;
+      piezaStats[pieza.id].agendas++;
+    }
+    if (lead.calificado === true)    angStats[ang].calificados++;
+    if (lead.descalificado === true) angStats[ang].descalificados++;
+  });
+
+  // Facturación: ingresos 'Venta Nueva' → match instagram to leads → attribute to their pieza/angulo
+  // Mirrors the S.ing loop in renderAng() — script.js:1510
+  ingresos.forEach(ing => {
+    if (ing.concepto !== 'Venta Nueva' || !(Number(ing.usd) > 0) || !ing.instagram) return;
+    const igLow = ing.instagram.toLowerCase();
+    const lead  = leads.find(l => (l.instagram || '').toLowerCase() === igLow);
+    if (!lead) return;
+    const ets   = _reportGetEtiquetas(lead);
+    if (!ets.length) return;
+    const pieza = piezaMap[ets[ets.length - 1]] || _reportFindPieza(ets[ets.length - 1], piezas, year);
+    if (!pieza || !pieza.angulo) return;
+    if (!angStats[pieza.angulo]) angStats[pieza.angulo] = { ventas: 0, agendas: 0, facturacion: 0, calificados: 0, descalificados: 0 };
+    angStats[pieza.angulo].facturacion += Number(ing.usd) || 0;
+    if (piezaStats[pieza.id]) piezaStats[pieza.id].facturacion += Number(ing.usd) || 0;
+  });
+
+  // Build sorted arrays
+  const topAngulos = Object.entries(angStats)
+    .map(([angulo, st]) => ({
+      angulo,
+      ventas:         st.ventas,
+      agendas:        st.agendas,
+      facturacion:    st.facturacion,
+      calificados:    st.calificados,
+      descalificados: st.descalificados,
+      close_rate:     st.agendas > 0 ? Math.round(st.ventas / st.agendas * 100) : 0,
+      piezas: Object.entries(angPiezas[angulo] || {})
+        .map(([label, s]) => ({ label, ventas: s.ventas, agendas: s.agendas }))
+        .sort((a, b) => b.ventas - a.ventas),
+    }))
+    .sort((a, b) => b.ventas - a.ventas);
+
+  const topPiezas = Object.values(piezaStats)
+    .map(st => ({
+      id:          st.pieza.id,
+      tipo:        st.pieza.tipo,
+      fecha:       st.pieza.fecha,
+      angulo:      st.pieza.angulo || null,
+      formato:     st.pieza.formato || null,
+      label:       _reportPiezaLabel(st.pieza),
+      agendas:     st.agendas,
+      ventas:      st.ventas,
+      facturacion: st.facturacion,
+    }))
+    .sort((a, b) => b.ventas - a.ventas || b.agendas - a.agendas);
+
+  // Summary by content type
+  const porTipo = {};
+  topPiezas.forEach(p => {
+    if (!porTipo[p.tipo]) porTipo[p.tipo] = { piezas: 0, agendas: 0, ventas: 0, facturacion: 0 };
+    porTipo[p.tipo].piezas++;
+    porTipo[p.tipo].agendas     += p.agendas;
+    porTipo[p.tipo].ventas      += p.ventas;
+    porTipo[p.tipo].facturacion += p.facturacion;
+  });
+
+  return { topAngulos, topPiezas, porTipo };
+}
+
+// Port of _computeLostBreakdown() + renderFunnelMetricas() — script.js:1926, 2731
+function _buildFunnelSnapshot(leads) {
+  const activos  = leads.filter(l => !_reportEsPerdido(l));
+  const perdidos = leads.filter(l =>  _reportEsPerdido(l));
+  const total    = activos.length;
+
+  const fases = REPORT_FUNNEL_FASES.map(f => {
+    const inFase = activos.filter(l => f.estados.includes(l.estado));
+    return {
+      label:          f.label,
+      count:          inFase.length,
+      pct:            total > 0 ? Math.round(inFase.length / total * 100) : 0,
+      calificados:    inFase.filter(l => l.calificado    === true).length,
+      descalificados: inFase.filter(l => l.descalificado === true).length,
+    };
+  });
+
+  // Lost breakdown: at which stage were they lost
+  const lostBreakdown = {};
+  REPORT_FUNNEL_FASES.forEach(f => { lostBreakdown[f.label] = 0; });
+  perdidos.forEach(lead => {
+    const lostAt = (lead.estado === 'Perdido' && lead.estado_anterior)
+      ? lead.estado_anterior
+      : ((lead.seguimientos || 0) >= 4 && lead.respondio_seguimiento_4 === 'NO' ? lead.estado : null);
+    if (!lostAt) return;
+    const fase = REPORT_FUNNEL_FASES.find(f => f.estados.includes(lostAt));
+    if (fase) lostBreakdown[fase.label]++;
+  });
+
+  return { total, perdidos: perdidos.length, fases, lost_breakdown: lostBreakdown };
+}
+
+// Delta string helper — mirrors _delta() in script.js:476
+function _reportFmtDelta(curr, prev) {
+  if (prev === 0) return curr > 0 ? '+∞%' : '0%';
+  const pct = (curr - prev) / prev * 100;
+  return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+}
+
+// ============================================================
+// 📊 POST /reports/weekly/generate
+// ============================================================
+app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
+  try {
+    const { fecha_inicio, fecha_fin } = req.body;
+    if (!fecha_inicio || !fecha_fin) {
+      return res.status(400).json({ error: 'Faltan fecha_inicio y fecha_fin (YYYY-MM-DD)' });
+    }
+
+    const clienteId = req.cliente_id;
+
+    // Parse dates as UTC to avoid timezone drift
+    const [y, m, d] = fecha_inicio.split('-').map(Number);
+    const fechaInicioUTC = new Date(Date.UTC(y, m - 1, d));
+    const year = y;
+
+    // Previous week: same duration, immediately before fecha_inicio
+    const prevEndUTC   = new Date(fechaInicioUTC); prevEndUTC.setUTCDate(fechaInicioUTC.getUTCDate() - 1);
+    const prevStartUTC = new Date(prevEndUTC);      prevStartUTC.setUTCDate(prevEndUTC.getUTCDate() - 6);
+
+    // ISO strings for timestamp fields (leads, calls, clientes)
+    const curStartTs  = `${fecha_inicio}T00:00:00.000Z`;
+    const curEndTs    = `${fecha_fin}T23:59:59.999Z`;
+    const prevStartTs = prevStartUTC.toISOString();
+    const prevEndTs   = prevEndUTC.toISOString().replace('T00:00:00.000Z', 'T23:59:59.999Z');
+
+    // ISO date strings for date fields (ingresos.fecha, egresos.fecha)
+    const prevStartDate = prevStartUTC.toISOString().slice(0, 10);
+    const prevEndDate   = prevEndUTC.toISOString().slice(0, 10);
+
+    // All queries in parallel — leads need estado_anterior for lost breakdown
+    const leadsFields = LEADS_LITE_FIELDS + ',estado_anterior';
+    const [
+      leadsNowRes,
+      leadsPrevRes,
+      ingCurRes,
+      ingPrevRes,
+      egresosCurRes,
+      callsCurRes,
+      callsPrevRes,
+      cliCurRes,
+      cliPrevRes,
+      contenidoRes,
+    ] = await Promise.all([
+      supabase.from('leads').select(leadsFields)
+        .eq('cliente_id', clienteId).gte('created_at', curStartTs).lte('created_at', curEndTs),
+      supabase.from('leads').select(leadsFields)
+        .eq('cliente_id', clienteId).gte('created_at', prevStartTs).lte('created_at', prevEndTs),
+      supabase.from('ingresos').select('usd,fecha,concepto,instagram,tipo')
+        .eq('cliente_id', clienteId).gte('fecha', fecha_inicio).lte('fecha', fecha_fin),
+      supabase.from('ingresos').select('usd,fecha,concepto')
+        .eq('cliente_id', clienteId).gte('fecha', prevStartDate).lte('fecha', prevEndDate),
+      supabase.from('egresos').select('usd,fecha,tipo')
+        .eq('cliente_id', clienteId).gte('fecha', fecha_inicio).lte('fecha', fecha_fin),
+      supabase.from('calls').select('id,estado,created_at')
+        .eq('cliente_id', clienteId).gte('created_at', curStartTs).lte('created_at', curEndTs),
+      supabase.from('calls').select('id,estado')
+        .eq('cliente_id', clienteId).gte('created_at', prevStartTs).lte('created_at', prevEndTs),
+      supabase.from('clientes').select('id,cash_collected,created_at')
+        .eq('cliente_id', clienteId).gte('created_at', curStartTs).lte('created_at', curEndTs),
+      supabase.from('clientes').select('id,cash_collected')
+        .eq('cliente_id', clienteId).gte('created_at', prevStartTs).lte('created_at', prevEndTs),
+      supabase.from('contenido').select('id,data')
+        .eq('cliente_id', clienteId),
+    ]);
+
+    // Fail fast on critical queries
+    for (const [name, r] of [
+      ['leads actuales', leadsNowRes], ['ingresos', ingCurRes], ['contenido', contenidoRes],
+    ]) {
+      if (r.error) return res.status(500).json({ error: `Query "${name}": ${r.error.message}` });
+    }
+
+    const leadsNow   = leadsNowRes.data   || [];
+    const leadsPrev  = leadsPrevRes.data  || [];
+    const ingCur     = ingCurRes.data     || [];
+    const ingPrev    = ingPrevRes.data    || [];
+    const egresosCur = egresosCurRes.data || [];
+    const callsCur   = callsCurRes.data   || [];
+    const callsPrev  = callsPrevRes.data  || [];
+    const cliCur     = cliCurRes.data     || [];
+    const cliPrev    = cliPrevRes.data    || [];
+
+    // Flatten contenido: merge data JSONB with top-level id (mirrors GET /contenido mapping)
+    const piezas = (contenidoRes.data || []).map(r => ({ id: r.id, ...(r.data || {}) }));
+
+    // ── Métricas de ventas (semana actual) ──
+    const cerradosNow   = leadsNow.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
+    const agendasCount  = leadsNow.filter(l => l.estado === 'Agendado').length;
+    const facturacion   = ingCur.filter(i => i.concepto === 'Venta Nueva').reduce((s, i) => s + (Number(i.usd) || 0), 0);
+    const cashCollected = cliCur.reduce((s, c) => s + (Number(c.cash_collected) || 0), 0);
+    const egresoTotal   = egresosCur.reduce((s, e) => s + (Number(e.usd) || 0), 0);
+    const showsCount    = callsCur.filter(c => !['No asistió', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
+    const aov           = cerradosNow.length > 0 ? Math.round(facturacion / cerradosNow.length) : 0;
+
+    // ── Métricas semana anterior ──
+    const cerradosPrev       = leadsPrev.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
+    const facturacionPrev    = ingPrev.filter(i => i.concepto === 'Venta Nueva').reduce((s, i) => s + (Number(i.usd) || 0), 0);
+    const cashCollectedPrev  = cliPrev.reduce((s, c) => s + (Number(c.cash_collected) || 0), 0);
+
+    // ── Funnel snapshot ──
+    const funnel = _buildFunnelSnapshot(leadsNow);
+
+    // ── Atribución: ángulos + piezas ──
+    const atribucion = _buildAtribucion(leadsNow, piezas, ingCur, year);
+
+    // ── Comparativa ──
+    const comparativa = {
+      semana_anterior: {
+        leads:          leadsPrev.length,
+        cerrados:       cerradosPrev.length,
+        facturacion:    facturacionPrev,
+        cash_collected: cashCollectedPrev,
+        calls:          callsPrev.length,
+      },
+      delta_leads:          _reportFmtDelta(leadsNow.length,       leadsPrev.length),
+      delta_cerrados:       _reportFmtDelta(cerradosNow.length,    cerradosPrev.length),
+      delta_facturacion:    _reportFmtDelta(facturacion,           facturacionPrev),
+      delta_cash_collected: _reportFmtDelta(cashCollected,         cashCollectedPrev),
+      delta_calls:          _reportFmtDelta(callsCur.length,       callsPrev.length),
+    };
+
+    // ── Objeto metricas final ──
+    const metricas = {
+      ventas: {
+        leads:            leadsNow.length,
+        agendas:          agendasCount,
+        cerrados:         cerradosNow.length,
+        facturacion,
+        cash_collected:   cashCollected,
+        egresos:          egresoTotal,
+        aov,
+        calls:            callsCur.length,
+        shows:            showsCount,
+        tasa_cierre:      agendasCount > 0 ? Math.round(cerradosNow.length / agendasCount * 100) : 0,
+      },
+      funnel,
+      contenido: {
+        total_piezas_con_datos: atribucion.topPiezas.length,
+        por_tipo: atribucion.porTipo,
+      },
+      top_angulos: atribucion.topAngulos,
+      top_piezas:  atribucion.topPiezas.slice(0, 10),
+      comparativa,
+    };
+
+    // ── Persist ──
+    const { data: saved, error: saveErr } = await supabase
+      .from('negocio_weekly_reports')
+      .insert({ cliente_id: clienteId, fecha_inicio, fecha_fin, metricas, insights_ia: null })
+      .select()
+      .single();
+
+    if (saveErr) {
+      console.error('❌ Save weekly report:', saveErr);
+      // Return computed data even if save fails — frontend can still use it
+      return res.json({ id: null, cliente_id: clienteId, fecha_inicio, fecha_fin, metricas, insights_ia: null });
+    }
+
+    console.log(`📊 Weekly report generated: ${fecha_inicio} → ${fecha_fin} (cliente: ${clienteId})`);
+    res.json(saved);
+  } catch (err) {
+    console.error('❌ POST /reports/weekly/generate:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 🤖 POST /reports/weekly/insights  — genera análisis IA
+// ============================================================
+app.post('/reports/weekly/insights', validateAccess, async (req, res) => {
+  try {
+    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada' });
+
+    const { report_id, metricas: metricasBody, fecha_inicio, fecha_fin } = req.body;
+
+    // Load from DB if report_id provided, otherwise use body metricas
+    let metricas = metricasBody;
+    let fechaIni = fecha_inicio;
+    let fechaFin = fecha_fin;
+
+    if (report_id) {
+      const { data: rep } = await supabase
+        .from('negocio_weekly_reports')
+        .select('metricas, fecha_inicio, fecha_fin')
+        .eq('id', report_id)
+        .eq('cliente_id', req.cliente_id)
+        .maybeSingle();
+      if (rep) { metricas = rep.metricas; fechaIni = rep.fecha_inicio; fechaFin = rep.fecha_fin; }
+    }
+
+    if (!metricas) return res.status(400).json({ error: 'Faltan métricas (pasá report_id o metricas)' });
+
+    // Reuse ai_config business context — same pattern as /ai/analyze
+    const { data: aiConf } = await supabase
+      .from('ai_config').select('custom_context')
+      .eq('cliente_id', req.cliente_id).maybeSingle();
+
+    let systemPrompt = WEEKLY_REPORT_SYSTEM;
+    if (aiConf?.custom_context?.trim()) {
+      systemPrompt += `\n\n## CONTEXTO DEL NEGOCIO\n${aiConf.custom_context.trim()}`;
+    }
+
+    // Format metrics as readable text for Claude
+    const v        = metricas.ventas     || {};
+    const comp     = metricas.comparativa || {};
+    const topAngs  = (metricas.top_angulos || []).slice(0, 5);
+    const topPiezas = (metricas.top_piezas || []).slice(0, 5);
+    const fases    = metricas.funnel?.fases || [];
+
+    const metricsText = `MÉTRICAS DE LA SEMANA ${fechaIni ? `(${fechaIni} al ${fechaFin})` : ''}:
+
+VENTAS:
+- Leads nuevos: ${v.leads ?? 0} (${comp.delta_leads ?? '—'} vs semana anterior)
+- Cerrados/Ventas: ${v.cerrados ?? 0} (${comp.delta_cerrados ?? '—'} vs semana anterior)
+- Agendas: ${v.agendas ?? 0}
+- Tasa de cierre: ${v.tasa_cierre ?? 0}%
+- Facturación: $${v.facturacion ?? 0} USD (${comp.delta_facturacion ?? '—'} vs semana anterior)
+- Cash Collected: $${v.cash_collected ?? 0} USD (${comp.delta_cash_collected ?? '—'} vs semana anterior)
+- Calls realizadas: ${v.calls ?? 0} | Shows: ${v.shows ?? 0}
+- AOV (ticket promedio): $${v.aov ?? 0} USD
+
+SEMANA ANTERIOR:
+- Leads: ${comp.semana_anterior?.leads ?? 0}
+- Cerrados: ${comp.semana_anterior?.cerrados ?? 0}
+- Facturación: $${comp.semana_anterior?.facturacion ?? 0} USD
+
+FUNNEL (estado actual de leads de la semana):
+${fases.map(f => `- ${f.label}: ${f.count} leads (${f.pct}%) — cal: ${f.calificados}, descal: ${f.descalificados}`).join('\n') || '- Sin datos de funnel'}
+
+TOP ÁNGULOS (por ventas):
+${topAngs.length
+  ? topAngs.map((a, i) => `${i + 1}. "${a.angulo}" — ${a.ventas} ventas, ${a.agendas} agendas, cierre ${a.close_rate}%, $${a.facturacion} USD`).join('\n')
+  : '- Sin datos de atribución esta semana.'}
+
+TOP PIEZAS DE CONTENIDO:
+${topPiezas.length
+  ? topPiezas.map((p, i) => `${i + 1}. ${p.label} (${p.angulo || 'sin ángulo'}) — ${p.ventas} ventas, ${p.agendas} agendas`).join('\n')
+  : '- Sin contenido atribuido esta semana.'}`.trim();
+
+    const completion = await _anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: `Analizá las métricas de esta semana y generá el reporte ejecutivo:\n\n${metricsText}` }],
+    });
+
+    const insights = completion.content[0].text;
+
+    // Persist insights on the report record if report_id provided
+    if (report_id) {
+      await supabase
+        .from('negocio_weekly_reports')
+        .update({ insights_ia: insights })
+        .eq('id', report_id)
+        .eq('cliente_id', req.cliente_id);
+    }
+
+    res.json({ insights_ia: insights, report_id: report_id || null });
+  } catch (err) {
+    console.error('❌ POST /reports/weekly/insights:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 📊 GET /reports/weekly — lista de reportes guardados
+// ============================================================
+app.get('/reports/weekly', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('negocio_weekly_reports')
+      .select('id, fecha_inicio, fecha_fin, created_at, insights_ia')
+      .eq('cliente_id', req.cliente_id)
+      .order('fecha_inicio', { ascending: false })
+      .limit(52);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 📊 GET /reports/weekly/:id — reporte completo
+// ============================================================
+app.get('/reports/weekly/:id', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('negocio_weekly_reports')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Reporte no encontrado' });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
