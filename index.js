@@ -2782,7 +2782,8 @@ function _buildAtribucion(leads, piezas, ingresos, year) {
     if (!angStats[ang])         angStats[ang]  = { ventas: 0, agendas: 0, facturacion: 0, calificados: 0, descalificados: 0 };
     if (!angPiezas[ang])        angPiezas[ang] = {};
     if (!angPiezas[ang][plabel]) angPiezas[ang][plabel] = { ventas: 0, agendas: 0 };
-    if (!piezaStats[pieza.id])  piezaStats[pieza.id] = { ventas: 0, agendas: 0, facturacion: 0, igsClosed: new Set(), pieza };
+    if (!piezaStats[pieza.id])  piezaStats[pieza.id] = { ventas: 0, agendas: 0, facturacion: 0, leads: 0, igsClosed: new Set(), pieza };
+    piezaStats[pieza.id].leads++;
 
     if (REPORT_ESTADO_CERRADO.has(lead.estado)) {
       angStats[ang].ventas++;
@@ -2833,17 +2834,25 @@ function _buildAtribucion(leads, piezas, ingresos, year) {
 
   const topPiezas = Object.values(piezaStats)
     .map(st => ({
-      id:          st.pieza.id,
-      tipo:        st.pieza.tipo,
-      fecha:       st.pieza.fecha,
-      angulo:      st.pieza.angulo || null,
-      formato:     st.pieza.formato || null,
-      label:       _reportPiezaLabel(st.pieza),
-      agendas:     st.agendas,
-      ventas:      st.ventas,
-      facturacion: st.facturacion,
+      id:              st.pieza.id,
+      tipo:            st.pieza.tipo,
+      fecha:           st.pieza.fecha,
+      angulo:          st.pieza.angulo || null,
+      formato:         st.pieza.formato || null,
+      label:           _reportPiezaLabel(st.pieza),
+      agendas:         st.agendas,
+      ventas:          st.ventas,
+      facturacion:     st.facturacion,
+      leads_generados: st.leads,
     }))
-    .sort((a, b) => b.ventas - a.ventas || b.agendas - a.agendas);
+    .sort((a, b) => {
+      const ta = a.ventas > 0 ? 0 : a.agendas > 0 ? 1 : 2;
+      const tb = b.ventas > 0 ? 0 : b.agendas > 0 ? 1 : 2;
+      if (ta !== tb) return ta - tb;
+      if (ta === 0) return b.ventas - a.ventas || b.agendas - a.agendas;
+      if (ta === 1) return b.agendas - a.agendas;
+      return b.leads_generados - a.leads_generados;
+    });
 
   // Summary by content type
   const porTipo = {};
@@ -3135,7 +3144,7 @@ ${topAngs.length
 
 TOP PIEZAS DE CONTENIDO:
 ${topPiezas.length
-  ? topPiezas.map((p, i) => `${i + 1}. ${p.label} (${p.angulo || 'sin ángulo'}) — ${p.ventas} ventas, ${p.agendas} agendas`).join('\n')
+  ? topPiezas.map((p, i) => `${i + 1}. ${p.label} (${p.angulo || 'sin ángulo'}) — ${p.ventas} ventas, ${p.agendas} agendas, ${p.leads_generados ?? 0} leads`).join('\n')
   : '- Sin contenido atribuido esta semana.'}`.trim();
 
     const completion = await _anthropic.messages.create({
@@ -3213,6 +3222,106 @@ app.get('/reports/weekly/:id', validateAccess, async (req, res) => {
     if (!data) return res.status(404).json({ error: 'Reporte no encontrado' });
     res.json(data);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 💬 POST /reports/weekly/chat  — consultor estratégico IA
+// ============================================================
+app.post('/reports/weekly/chat', validateAccess, async (req, res) => {
+  try {
+    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada' });
+
+    const { report_id, message, history = [] } = req.body;
+    if (!report_id || !message?.trim()) return res.status(400).json({ error: 'Faltan report_id o message' });
+
+    const { data: rep } = await supabase
+      .from('negocio_weekly_reports')
+      .select('metricas, insights_ia, fecha_inicio, fecha_fin')
+      .eq('id', report_id)
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+    if (!rep) return res.status(404).json({ error: 'Reporte no encontrado' });
+
+    const { data: aiConf } = await supabase
+      .from('ai_config').select('custom_context')
+      .eq('cliente_id', req.cliente_id).maybeSingle();
+
+    const v      = rep.metricas?.ventas     || {};
+    const comp   = rep.metricas?.comparativa || {};
+    const fases  = rep.metricas?.funnel?.fases || [];
+    const topAngs   = (rep.metricas?.top_angulos || []).slice(0, 5);
+    const topPiezas = (rep.metricas?.top_piezas  || []).slice(0, 5);
+    const showRate  = (v.calls ?? 0) > 0 ? Math.round((v.shows ?? 0) / v.calls * 100) : 0;
+
+    const reportCtx = `REPORTE SEMANAL (${rep.fecha_inicio} al ${rep.fecha_fin}):
+
+VENTAS:
+- Leads nuevos: ${v.leads ?? 0} (${comp.delta_leads ?? '—'} vs semana anterior)
+- Cerrados/Ventas: ${v.cerrados ?? 0} (${comp.delta_cerrados ?? '—'} vs semana anterior)
+- Agendas: ${v.agendas ?? 0}
+- Calls: ${v.calls ?? 0} | Shows: ${v.shows ?? 0} | Show rate: ${showRate}%
+- Tasa de cierre: ${v.tasa_cierre ?? 0}%
+- Facturación: $${v.facturacion ?? 0} USD (${comp.delta_facturacion ?? '—'} vs semana anterior)
+- Cash Collected: $${v.cash_collected ?? 0} USD
+- AOV: $${v.aov ?? 0} USD
+
+FUNNEL:
+${fases.map(f => `- ${f.label}: ${f.count} leads (${f.pct}%)`).join('\n') || '- Sin datos'}
+
+TOP ÁNGULOS:
+${topAngs.length
+  ? topAngs.map((a, i) => `${i + 1}. "${a.angulo}" — ${a.ventas} ventas, ${a.agendas} agendas, cierre ${a.close_rate}%`).join('\n')
+  : '- Sin datos de atribución'}
+
+TOP PIEZAS:
+${topPiezas.length
+  ? topPiezas.map((p, i) => `${i + 1}. ${p.label} (${p.angulo || 'sin ángulo'}) — ${p.ventas} ventas, ${p.agendas} agendas, ${p.leads_generados ?? 0} leads`).join('\n')
+  : '- Sin datos de contenido'}`;
+
+    let insightsCtx = '';
+    if (rep.insights_ia) {
+      try {
+        let raw = typeof rep.insights_ia === 'string' ? rep.insights_ia : JSON.stringify(rep.insights_ia);
+        raw = raw.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+        const ins = JSON.parse(raw);
+        insightsCtx = `\n\nINSIGHTS IA (análisis previo):
+- Resumen: ${ins.resumen_ejecutivo || '—'}
+- Qué funcionó: ${(ins.que_funciono || []).join('; ') || '—'}
+- Problemas: ${(ins.problemas_detectados || []).join('; ') || '—'}
+- Recomendaciones: ${(ins.recomendaciones || []).join('; ') || '—'}
+- Riesgos: ${(ins.riesgos || []).join('; ') || '—'}`;
+      } catch (e) {}
+    }
+
+    let systemPrompt = `Sos un consultor estratégico de negocios de alto ticket en el mercado hispanohablante. Tenés acceso completo al reporte semanal del negocio y respondés consultas concretas y accionables sobre contenido, ventas, funnel, show rate, cierres, ángulos, CTAs y optimización semanal.
+
+${reportCtx}${insightsCtx}`;
+
+    if (aiConf?.custom_context?.trim()) {
+      systemPrompt += `\n\nCONTEXTO DEL NEGOCIO:\n${aiConf.custom_context.trim()}`;
+    }
+
+    systemPrompt += `\n\nRespondés en español rioplatense. Directo, sin paja. Basate siempre en los datos del reporte. Máximo 200 palabras por respuesta.`;
+
+    const messages = [
+      ...(Array.isArray(history) ? history : [])
+        .filter(h => h.role === 'user' || h.role === 'assistant')
+        .map(h => ({ role: h.role, content: String(h.content) })),
+      { role: 'user', content: message.trim() },
+    ];
+
+    const completion = await _anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      system: systemPrompt,
+      messages,
+    });
+
+    res.json({ reply: completion.content[0].text });
+  } catch (err) {
+    console.error('❌ POST /reports/weekly/chat:', err);
     res.status(500).json({ error: err.message });
   }
 });
