@@ -2994,19 +2994,23 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     const piezas = (contenidoRes.data || []).map(r => ({ id: r.id, ...(r.data || {}) }));
 
     // ── Métricas de ventas (semana actual) ──
-    const cerradosNow   = leadsNow.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
-    const agendasCount  = leadsNow.filter(l => l.estado === 'Agendado').length;
-    const facturacion   = ingCur.filter(i => i.concepto === 'Venta Nueva').reduce((s, i) => s + (Number(i.usd) || 0), 0);
-    const cashCollected = cliCur.reduce((s, c) => s + (Number(c.cash_collected) || 0), 0);
-    const egresoTotal   = egresosCur.reduce((s, e) => s + (Number(e.usd) || 0), 0);
-    const showsCount    = callsCur.filter(c => !['No asistió', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
-    const aov           = cerradosNow.length > 0 ? Math.round(facturacion / cerradosNow.length) : 0;
-    const seguidoresNow = piezas
-      .filter(p => p.fecha >= fecha_inicio && p.fecha <= fecha_fin)
-      .reduce((s, p) => s + (Number(p.seguidores_nuevos) || 0), 0);
-    const seguidoresPrev = piezas
-      .filter(p => p.fecha >= prevStartDate && p.fecha <= prevEndDate)
-      .reduce((s, p) => s + (Number(p.seguidores_nuevos) || 0), 0);
+    const SEG_LABELS = new Set(['seguidor nuevo', 'seguir nuevo']);
+    const _isSegNuevo = (lead) => {
+      const ets = Array.isArray(lead.etiquetas) && lead.etiquetas.length
+        ? lead.etiquetas : lead.etiqueta ? [lead.etiqueta] : [];
+      return ets.some(e => SEG_LABELS.has((e || '').toLowerCase().trim()));
+    };
+    const cerradosNow    = leadsNow.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
+    const agendasCount   = leadsNow.filter(l => l.estado === 'Agendado').length;
+    const facturacion    = ingCur.filter(i => i.concepto === 'Venta Nueva').reduce((s, i) => s + (Number(i.usd) || 0), 0);
+    const cashCollected  = cliCur.reduce((s, c) => s + (Number(c.cash_collected) || 0), 0);
+    const egresoTotal    = egresosCur.reduce((s, e) => s + (Number(e.usd) || 0), 0);
+    const showsCount     = callsCur.filter(c => !['No asistió', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
+    const aov            = cerradosNow.length > 0 ? Math.round(facturacion / cerradosNow.length) : 0;
+    const seguidoresNow  = leadsNow.filter(_isSegNuevo).length;
+    const orgLeadsNow    = leadsNow.length - seguidoresNow;
+    const seguidoresPrev = leadsPrev.filter(_isSegNuevo).length;
+    const orgLeadsPrev   = leadsPrev.length - seguidoresPrev;
 
     // ── Métricas semana anterior ──
     const cerradosPrev       = leadsPrev.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
@@ -3023,14 +3027,14 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     const comparativa = {
       semana_anterior: {
         seguidores_nuevos: seguidoresPrev,
-        leads:             leadsPrev.length,
+        leads:             orgLeadsPrev,
         cerrados:          cerradosPrev.length,
         facturacion:       facturacionPrev,
         cash_collected:    cashCollectedPrev,
         calls:             callsPrev.length,
       },
-      delta_seguidores:     _reportFmtDelta(seguidoresNow,         seguidoresPrev),
-      delta_leads:          _reportFmtDelta(leadsNow.length,       leadsPrev.length),
+      delta_seguidores:     _reportFmtDelta(seguidoresNow,  seguidoresPrev),
+      delta_leads:          _reportFmtDelta(orgLeadsNow,    orgLeadsPrev),
       delta_cerrados:       _reportFmtDelta(cerradosNow.length,    cerradosPrev.length),
       delta_facturacion:    _reportFmtDelta(facturacion,           facturacionPrev),
       delta_cash_collected: _reportFmtDelta(cashCollected,         cashCollectedPrev),
@@ -3041,7 +3045,7 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     const metricas = {
       ventas: {
         seguidores_nuevos: seguidoresNow,
-        leads:             leadsNow.length,
+        leads:             orgLeadsNow,
         agendas:           agendasCount,
         cerrados:          cerradosNow.length,
         facturacion,
