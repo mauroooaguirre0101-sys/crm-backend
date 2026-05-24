@@ -2518,6 +2518,79 @@ app.delete('/ai/chat-analyses/:id', validateAccess, async (req, res) => {
   }
 });
 
+// ========== TAREAS POR NEGOCIO ==========
+app.get('/tasks', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('negocio_tasks')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/tasks', validateAccess, async (req, res) => {
+  try {
+    const { titulo, descripcion, columna, area, prioridad, responsable, fecha_limite } = req.body;
+    if (!titulo?.trim()) return res.status(400).json({ error: 'El título es obligatorio' });
+    const { data, error } = await supabase
+      .from('negocio_tasks')
+      .insert({
+        cliente_id: req.cliente_id,
+        titulo: titulo.trim(),
+        descripcion: descripcion?.trim() || null,
+        columna: columna || 'por_hacer',
+        area: area || null,
+        prioridad: prioridad || null,
+        responsable: responsable?.trim() || null,
+        fecha_limite: fecha_limite || null,
+      })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/tasks/:id', validateAccess, async (req, res) => {
+  try {
+    const allowed = ['titulo','descripcion','columna','area','prioridad','responsable','fecha_limite'];
+    const updates = {};
+    allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+    const { data, error } = await supabase
+      .from('negocio_tasks')
+      .update(updates)
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id)
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/tasks/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('negocio_tasks')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
