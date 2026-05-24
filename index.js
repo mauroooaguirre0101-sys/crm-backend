@@ -3164,6 +3164,23 @@ ${topPiezas.length
 });
 
 // ============================================================
+// 🗑 DELETE /reports/weekly/:id
+// ============================================================
+app.delete('/reports/weekly/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('negocio_weekly_reports')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // 📊 GET /reports/weekly — lista de reportes guardados
 // ============================================================
 app.get('/reports/weekly', validateAccess, async (req, res) => {
