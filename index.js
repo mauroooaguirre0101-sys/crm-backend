@@ -3597,33 +3597,46 @@ app.get('/auth/discord/callback', async (req, res) => {
   const { alumno_id, cliente_id } = ctx;
 
   try {
+    console.log(`[Discord OAuth] callback — alumno_id=${alumno_id} cliente_id=${cliente_id}`);
+
     // Exchange code for tokens
     const tokens = await _discordOAuth.exchangeCode(code);
+    console.log(`[Discord OAuth] tokens OK — scope: ${tokens.scope}`);
 
     // Get Discord user profile
     const dUser = await _discordOAuth.getDiscordUser(tokens.access_token);
+    console.log(`[Discord OAuth] Discord user: ${dUser.username} (${dUser.id})`);
 
-    // Load alumno from DB
-    const { data: alumno } = await supabase.from('alumnos')
-      .select('id, nombre, apellido, discord_user_id, discord_channel_id')
+    // Load alumno from DB — log the exact query params for diagnosis
+    console.log(`[Discord OAuth] loading alumno — id=${alumno_id} cliente_id=${cliente_id}`);
+    const { data: alumno, error: alumnoErr } = await supabase.from('alumnos')
+      .select('id, nombre, apellido, cliente_id, discord_user_id, discord_channel_id')
       .eq('id', alumno_id).eq('cliente_id', cliente_id).maybeSingle();
 
+    if (alumnoErr) console.error('[Discord OAuth] alumno fetch error:', alumnoErr.message);
+    console.log(`[Discord OAuth] alumno found:`, alumno ? `${alumno.nombre} (cliente_id=${alumno.cliente_id})` : 'NULL');
+
     if (!alumno) {
+      // Extra diagnosis: check if alumno exists with a different cliente_id
+      const { data: anyAlumno } = await supabase.from('alumnos').select('id, cliente_id').eq('id', alumno_id).maybeSingle();
+      console.error(`[Discord OAuth] alumno_not_found — exists with different cliente_id? ${anyAlumno ? JSON.stringify(anyAlumno) : 'no existe en absoluto'}`);
       return res.redirect(`${frontendUrl}/formulario_semanal.html?discord=error&reason=alumno_not_found&cliente_id=${cliente_id}&alumno_id=${alumno_id}`);
     }
 
     // Add user to the Evoluciona guild
     await _discord.addGuildMember(dUser.id, tokens.access_token);
+    console.log(`[Discord OAuth] guild join OK`);
 
     // Create private channel if not already done
     let channelId = alumno.discord_channel_id;
     if (!channelId) {
       const nombre   = (alumno.nombre || 'alumno').toLowerCase();
       const chanName = `cliente-${nombre}`;
-      const chan     = await _discord.createPrivateChannel(chanName, dUser.id);
-      channelId      = chan.id;
+      console.log(`[Discord OAuth] creating channel: ${chanName}`);
+      const chan = await _discord.createPrivateChannel(chanName, dUser.id);
+      channelId  = chan.id;
+      console.log(`[Discord OAuth] channel created: ${channelId}`);
 
-      // Welcome message in the new channel
       const link = frontendUrl
         ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}`
         : '';
@@ -3632,24 +3645,39 @@ app.get('/auth/discord/callback', async (req, res) => {
         `Acá vas a recibir recordatorios, novedades y feedback del equipo.\n` +
         (link ? `📋 Tu link de reporte semanal: ${link}` : '')
       );
+    } else {
+      console.log(`[Discord OAuth] channel already exists: ${channelId}`);
     }
 
-    // Persist Discord info in alumnos
-    await supabase.from('alumnos').update({
-      discord_user_id:     dUser.id,
-      discord_username:    dUser.global_name || dUser.username,
-      discord_avatar:      dUser.avatar
+    // Persist Discord info — capture error explicitly
+    const updatePayload = {
+      discord_user_id:      dUser.id,
+      discord_username:     dUser.global_name || dUser.username,
+      discord_avatar:       dUser.avatar
         ? `https://cdn.discordapp.com/avatars/${dUser.id}/${dUser.avatar}.png`
         : null,
-      discord_channel_id:  channelId,
+      discord_channel_id:   channelId,
       discord_connected_at: new Date().toISOString(),
-    }).eq('id', alumno_id);
+    };
+    console.log(`[Discord OAuth] updating alumnos — id=${alumno_id}`, updatePayload);
+    const { data: updated, error: updateErr } = await supabase
+      .from('alumnos')
+      .update(updatePayload)
+      .eq('id', alumno_id)
+      .select('id, discord_user_id, discord_channel_id');
+
+    if (updateErr) {
+      console.error(`[Discord OAuth] UPDATE FAILED:`, updateErr.message, updateErr.details, updateErr.hint);
+      // Still redirect — channel was created, just DB write failed
+    } else {
+      console.log(`[Discord OAuth] UPDATE OK:`, JSON.stringify(updated));
+    }
 
     return res.redirect(
       `${frontendUrl}/formulario_semanal.html?discord=connected&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
     );
   } catch (err) {
-    console.error('Discord OAuth callback error:', err.message);
+    console.error('[Discord OAuth] callback error:', err.message, err.stack?.split('\n')[1]);
     return res.redirect(
       `${frontendUrl}/formulario_semanal.html?discord=error&reason=server_error&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
     );
@@ -3665,6 +3693,34 @@ app.get('/alumnos/:id/discord', async (req, res) => {
     if (error || !data) return res.status(404).json({ connected: false });
     res.json({ connected: !!data.discord_user_id, ...data });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── GET /discord/debug-students — show all alumnos with discord fields (no client filter) ──
+app.get('/discord/debug-students', async (req, res) => {
+  try {
+    // No cliente_id filter — lets us see every row and its actual cliente_id
+    const { data, error } = await supabase
+      .from('alumnos')
+      .select('id, nombre, apellido, cliente_id, discord_user_id, discord_channel_id, discord_connected_at')
+      .order('discord_connected_at', { ascending: false })
+      .limit(50);
+
+    if (error) return res.status(500).json({ error: error.message, hint: 'Las columnas discord_* pueden no existir — ejecutá la migración SQL' });
+
+    const connected   = (data || []).filter(a => a.discord_user_id);
+    const withChannel = (data || []).filter(a => a.discord_channel_id);
+    const ready       = (data || []).filter(a => a.discord_user_id && a.discord_channel_id);
+
+    res.json({
+      total_rows:        data?.length ?? 0,
+      with_discord_user: connected.length,
+      with_channel:      withChannel.length,
+      ready_to_receive:  ready.length,
+      rows:              data,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── GET /discord/debug — diagnose why no alumnos are found (admin only) ──
