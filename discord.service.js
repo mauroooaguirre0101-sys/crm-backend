@@ -5,6 +5,23 @@ const DISCORD_API = 'https://discord.com/api/v10';
 const STUDENT_ALLOW = '68608';
 const VIEW_DENY     = '1024';
 
+// Discord error code reference for permission debugging
+const DISCORD_ERRORS = {
+  '10003': 'Unknown Channel — DISCORD_CATEGORY_ID may be invalid or deleted',
+  '10004': 'Unknown Guild — DISCORD_GUILD_ID is wrong',
+  '50001': 'Missing Access — bot cannot access this guild or channel',
+  '50013': 'Missing Permissions — bot needs Manage Channels (and Manage Roles for overwrites)',
+  '50035': 'Invalid Form Body — channel name contains invalid characters or is too long',
+  '30013': 'Maximum Channels reached — guild has hit the 500 channel limit',
+};
+
+function _parseDiscordError(errMsg) {
+  for (const [code, hint] of Object.entries(DISCORD_ERRORS)) {
+    if (errMsg.includes(code)) return hint;
+  }
+  return null;
+}
+
 async function _req(method, path, body = null) {
   if (!process.env.DISCORD_BOT_TOKEN) throw new Error('DISCORD_BOT_TOKEN not set');
   const opts = {
@@ -24,13 +41,16 @@ async function _req(method, path, body = null) {
 
 // Add user to the main guild using their OAuth access_token (requires guilds.join scope)
 async function addGuildMember(discordUserId, accessToken) {
+  console.log(`[Discord] addGuildMember — user ${discordUserId} → guild ${process.env.DISCORD_GUILD_ID}`);
   try {
-    await _req('PUT', `/guilds/${process.env.DISCORD_GUILD_ID}/members/${discordUserId}`, {
+    const result = await _req('PUT', `/guilds/${process.env.DISCORD_GUILD_ID}/members/${discordUserId}`, {
       access_token: accessToken,
     });
+    // null = 204 = already a member
+    console.log(`[Discord] addGuildMember — ${result === null ? 'already a member' : 'joined successfully'}`);
   } catch (err) {
-    // Status 204 = already a member — that's fine
-    if (!err.message.includes('204')) console.warn('addGuildMember warn:', err.message);
+    const hint = _parseDiscordError(err.message);
+    console.warn(`[Discord] addGuildMember warn: ${err.message}${hint ? ` → ${hint}` : ''}`);
   }
 }
 
@@ -40,20 +60,38 @@ async function createPrivateChannel(rawName, discordUserId) {
   const name = rawName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 100);
 
+  console.log(`[Discord] createPrivateChannel — name="${name}" user=${discordUserId} guild=${guildId}`);
+  console.log(`[Discord] Env check — CATEGORY_ID=${process.env.DISCORD_CATEGORY_ID || '(none)'} ADMIN_ROLE_ID=${process.env.DISCORD_ADMIN_ROLE_ID || '(none)'}`);
+
   const overwrites = [
-    { id: guildId,       type: 0, deny:  VIEW_DENY     }, // deny @everyone
-    { id: discordUserId, type: 1, allow: STUDENT_ALLOW }, // allow student
+    { id: guildId,       type: 0, deny:  VIEW_DENY     }, // deny @everyone VIEW_CHANNEL
+    { id: discordUserId, type: 1, allow: STUDENT_ALLOW }, // allow student: view+send+history
   ];
 
-  // Optionally add an admin role
   if (process.env.DISCORD_ADMIN_ROLE_ID) {
     overwrites.push({ id: process.env.DISCORD_ADMIN_ROLE_ID, type: 0, allow: STUDENT_ALLOW });
+    console.log(`[Discord] Admin role overwrite added: ${process.env.DISCORD_ADMIN_ROLE_ID}`);
   }
 
-  const body = { name, type: 0, permission_overwrites: overwrites };
-  if (process.env.DISCORD_CATEGORY_ID) body.parent_id = process.env.DISCORD_CATEGORY_ID;
+  console.log(`[Discord] Permission overwrites: ${JSON.stringify(overwrites)}`);
 
-  return _req('POST', `/guilds/${guildId}/channels`, body);
+  const body = { name, type: 0, permission_overwrites: overwrites };
+  if (process.env.DISCORD_CATEGORY_ID) {
+    body.parent_id = process.env.DISCORD_CATEGORY_ID;
+    console.log(`[Discord] Placing channel under category: ${process.env.DISCORD_CATEGORY_ID}`);
+  }
+
+  try {
+    const channel = await _req('POST', `/guilds/${guildId}/channels`, body);
+    console.log(`[Discord] Channel created — id=${channel.id} name="${channel.name}" parent=${channel.parent_id || 'root'}`);
+    return channel;
+  } catch (err) {
+    const hint = _parseDiscordError(err.message);
+    console.error(`[Discord] createPrivateChannel FAILED: ${err.message}`);
+    if (hint) console.error(`[Discord] Hint: ${hint}`);
+    console.error(`[Discord] Debug — guild=${guildId} category=${process.env.DISCORD_CATEGORY_ID || '(none)'} adminRole=${process.env.DISCORD_ADMIN_ROLE_ID || '(none)'}`);
+    throw err;
+  }
 }
 
 // Send a plain text message to a channel

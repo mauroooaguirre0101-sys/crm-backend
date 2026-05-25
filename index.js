@@ -3576,7 +3576,9 @@ app.get('/auth/discord/login', async (req, res) => {
   if (error) return res.status(500).json({ error: 'Error al verificar identidad' });
   if (!alumno) return res.status(404).json({ error: 'Alumno no encontrado o no pertenece a este cliente' });
 
-  res.redirect(_discordOAuth.getOAuthURL(alumno_id, cliente_id));
+  const return_to = ['onboarding', 'formulario'].includes(req.query.return_to)
+    ? req.query.return_to : 'formulario';
+  res.redirect(_discordOAuth.getOAuthURL(alumno_id, cliente_id, return_to));
 });
 
 // ── Step 2: Discord redirects here after user consents ──
@@ -3673,13 +3675,15 @@ app.get('/auth/discord/callback', async (req, res) => {
       console.log(`[Discord OAuth] UPDATE OK:`, JSON.stringify(updated));
     }
 
+    const destPage = ctx.return_to === 'onboarding' ? 'discord_onboarding.html' : 'formulario_semanal.html';
     return res.redirect(
-      `${frontendUrl}/formulario_semanal.html?discord=connected&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
+      `${frontendUrl}/${destPage}?discord=connected&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
     );
   } catch (err) {
     console.error('[Discord OAuth] callback error:', err.message, err.stack?.split('\n')[1]);
+    const destPage = ctx?.return_to === 'onboarding' ? 'discord_onboarding.html' : 'formulario_semanal.html';
     return res.redirect(
-      `${frontendUrl}/formulario_semanal.html?discord=error&reason=server_error&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
+      `${frontendUrl}/${destPage}?discord=error&reason=server_error&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
     );
   }
 });

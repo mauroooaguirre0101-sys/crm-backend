@@ -2,9 +2,9 @@
 const DISCORD_API = 'https://discord.com/api/v10';
 const SCOPES      = 'identify guilds.join';
 
-// Encode alumno context in the OAuth state (base64url JSON)
-function buildState(alumno_id, cliente_id) {
-  return Buffer.from(JSON.stringify({ alumno_id, cliente_id })).toString('base64url');
+// Encode alumno context + return destination in the OAuth state (base64url JSON)
+function buildState(alumno_id, cliente_id, return_to = 'formulario') {
+  return Buffer.from(JSON.stringify({ alumno_id, cliente_id, return_to })).toString('base64url');
 }
 
 function parseState(state) {
@@ -14,13 +14,13 @@ function parseState(state) {
 }
 
 // Redirect URL to send the user to Discord's consent screen
-function getOAuthURL(alumno_id, cliente_id) {
+function getOAuthURL(alumno_id, cliente_id, return_to = 'formulario') {
   const params = new URLSearchParams({
     client_id:     process.env.DISCORD_CLIENT_ID,
     redirect_uri:  process.env.DISCORD_REDIRECT_URI,
     response_type: 'code',
     scope:         SCOPES,
-    state:         buildState(alumno_id, cliente_id),
+    state:         buildState(alumno_id, cliente_id, return_to),
     prompt:        'consent',
   });
   return `https://discord.com/api/oauth2/authorize?${params}`;
@@ -43,7 +43,7 @@ async function exchangeCode(code) {
     const text = await res.text();
     throw new Error(`Token exchange [${res.status}]: ${text}`);
   }
-  return res.json(); // { access_token, token_type, scope, expires_in, refresh_token }
+  return res.json();
 }
 
 // Get the authenticated Discord user's profile
@@ -52,7 +52,7 @@ async function getDiscordUser(accessToken) {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!res.ok) throw new Error(`getDiscordUser [${res.status}]`);
-  return res.json(); // { id, username, global_name, avatar, ... }
+  return res.json();
 }
 
 module.exports = { getOAuthURL, exchangeCode, getDiscordUser, parseState };
