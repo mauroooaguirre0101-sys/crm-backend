@@ -10,10 +10,15 @@ const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '25mb' }));
 
-// 🔑 Supabase
+// 🔑 Supabase (ws transport required for realtime on Node < 22)
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
+  process.env.SUPABASE_KEY,
+  {
+    realtime: {
+      transport: require('ws'),
+    },
+  }
 );
 
 // 📧 Gmail + Nodemailer
