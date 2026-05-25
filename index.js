@@ -3668,7 +3668,10 @@ app.get('/alumnos/:id/discord', async (req, res) => {
 });
 
 // ── GET /discord/debug — diagnose why no alumnos are found (admin only) ──
-app.get('/discord/debug', validateAccess, async (req, res) => {
+app.get('/discord/debug', async (req, res) => {
+  const cliente_id = req.headers['x-cliente-id'];
+  if (!cliente_id) return res.status(400).json({ error: 'Falta x-cliente-id' });
+  req.cliente_id = cliente_id;
   try {
     // Check if columns exist by fetching one row with all discord fields
     const { data: sample, error: colErr } = await supabase
@@ -3720,7 +3723,8 @@ app.get('/discord/debug', validateAccess, async (req, res) => {
 });
 
 // ── POST /discord/send-weekly-report — manual trigger (admin only) ──
-app.post('/discord/send-weekly-report', validateAccess, async (req, res) => {
+app.post('/discord/send-weekly-report', async (req, res) => {
+  if (!req.headers['x-cliente-id']) return res.status(400).json({ error: 'Falta x-cliente-id' });
   if (!process.env.DISCORD_BOT_TOKEN)
     return res.status(503).json({ error: 'DISCORD_BOT_TOKEN no configurado' });
   try {
