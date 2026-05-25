@@ -3643,7 +3643,7 @@ app.get('/auth/discord/callback', async (req, res) => {
         ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}`
         : '';
       await _discord.sendChannelMessage(channelId,
-        `👋 **Bienvenido/a, ${alumno.nombre || 'alumno'}!** Este es tu canal privado en Evoluciona.\n` +
+        `👋 **Bienvenido/a, ${alumno.nombre || 'alumno'}!** Este es tu canal privado donde vamos a poder acompañarte en el programa.\n` +
         `Acá vas a recibir recordatorios, novedades y feedback del equipo.\n` +
         (link ? `📋 Tu link de reporte semanal: ${link}` : '')
       );
