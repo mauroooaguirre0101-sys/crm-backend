@@ -173,6 +173,11 @@ const _anthropic = process.env.ANTHROPIC_API_KEY
   ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   : null;
 
+// 🎮 Discord modules
+const _discord          = require('./discord.service');
+const _discordOAuth     = require('./discord.oauth');
+const { startScheduler: _startDiscordScheduler, triggerReminder: _triggerDiscordReminder } = require('./discord.scheduler');
+
 const AI_BASE_SYSTEM = `Eres un analista estratégico de ventas de alto ticket especializado en el mercado hispanohablante. Tu rol es analizar transcripts de llamadas de ventas y actuar como un consultor experto.
 
 Cuando analizás un transcript por primera vez, estructurás la respuesta con estas secciones usando markdown:
@@ -1425,6 +1430,7 @@ app.post('/reportes', async (req, res) => {
         const { data: updated, error: updErr } = await supabase
           .from('reportes_semanales').update(fields).eq('id', existing.id).select().single();
         if (updErr) return res.status(500).json({ error: updErr.message });
+        _discordNotify('report_submitted', { alumno_id, cliente_id });
         return res.json({ ...updated, updated: true });
       }
     }
@@ -1451,6 +1457,7 @@ app.post('/reportes', async (req, res) => {
       editable_until: null,
     }]).select().single();
     if (error) return res.status(500).json({ error: error.message });
+    _discordNotify('report_submitted', { alumno_id, cliente_id });
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1476,6 +1483,10 @@ app.post('/reportes/:id/request-edit', async (req, res) => {
       estado: 'pending',
     }]).select().single();
     if (error) return res.status(500).json({ error: error.message });
+    // Notify admin Discord channel if configured
+    const { data: alumnoInfo } = await supabase.from('alumnos')
+      .select('nombre, apellido').eq('id', alumno_id).maybeSingle();
+    _discordNotify('edit_requested', { nombre: alumnoInfo?.nombre, apellido: alumnoInfo?.apellido, motivo: motivo.trim() });
     res.json({ ok: true, id: data.id });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1517,6 +1528,9 @@ app.patch('/reportes/edit-requests/:id', validateAccess, async (req, res) => {
       await supabase.from('reportes_semanales')
         .update({ locked: false, editable_until: editableUntil.toISOString() })
         .eq('id', editReq.reporte_id);
+      _discordNotify('edit_approved', { alumno_id: editReq.alumno_id, cliente_id: editReq.cliente_id });
+    } else {
+      _discordNotify('edit_rejected', { alumno_id: editReq.alumno_id });
     }
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -3482,9 +3496,171 @@ ${reportCtx}${insightsCtx}`;
   }
 });
 
+// ===============================
+// 🎮 DISCORD — OAuth + Bot integration
+// ===============================
+
+// Fire-and-forget Discord notifications — never crash the main flow
+async function _discordNotify(event, payload) {
+  if (!process.env.DISCORD_BOT_TOKEN) return;
+  try {
+    const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+
+    if (event === 'report_submitted') {
+      const { alumno_id, cliente_id } = payload;
+      if (!alumno_id) return;
+      const { data: a } = await supabase.from('alumnos')
+        .select('nombre, apellido, discord_channel_id').eq('id', alumno_id).maybeSingle();
+      if (!a?.discord_channel_id) return;
+      const nombre = [a.nombre, a.apellido].filter(Boolean).join(' ') || 'alumno';
+      const link   = frontendUrl ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}` : '';
+      await _discord.sendChannelMessage(a.discord_channel_id,
+        `📋 **Reporte enviado ✓** | Hola ${nombre}, tu reporte de esta semana quedó registrado. El equipo lo revisará pronto.\n${link}`);
+
+    } else if (event === 'edit_approved') {
+      const { alumno_id, cliente_id } = payload;
+      if (!alumno_id) return;
+      const { data: a } = await supabase.from('alumnos')
+        .select('nombre, apellido, discord_channel_id').eq('id', alumno_id).maybeSingle();
+      if (!a?.discord_channel_id) return;
+      const link = frontendUrl ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}` : '';
+      await _discord.sendChannelMessage(a.discord_channel_id,
+        `✅ **Edición aprobada** | Tenés 2 horas para actualizar tu reporte semanal.\n→ ${link}`);
+
+    } else if (event === 'edit_rejected') {
+      const { alumno_id } = payload;
+      if (!alumno_id) return;
+      const { data: a } = await supabase.from('alumnos')
+        .select('discord_channel_id').eq('id', alumno_id).maybeSingle();
+      if (!a?.discord_channel_id) return;
+      await _discord.sendChannelMessage(a.discord_channel_id,
+        `❌ **Edición rechazada** | Tu solicitud de edición no fue aprobada por el equipo.`);
+
+    } else if (event === 'edit_requested') {
+      const adminCh = process.env.DISCORD_ADMIN_CHANNEL_ID;
+      if (!adminCh) return;
+      const { nombre, apellido, motivo } = payload;
+      await _discord.sendChannelMessage(adminCh,
+        `✏️ **Solicitud de edición** | ${[nombre, apellido].filter(Boolean).join(' ')} quiere editar su reporte.\n> ${motivo}`);
+    }
+  } catch (err) {
+    console.error(`_discordNotify(${event}):`, err.message);
+  }
+}
+
+// ── Step 1: Redirect user to Discord consent screen ──
+// GET /auth/discord/login?alumno_id=X&cliente_id=Y
+app.get('/auth/discord/login', (req, res) => {
+  const { alumno_id, cliente_id } = req.query;
+  if (!alumno_id || !cliente_id) return res.status(400).json({ error: 'Faltan alumno_id y cliente_id' });
+  if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_REDIRECT_URI) {
+    return res.status(503).json({ error: 'Discord OAuth no configurado' });
+  }
+  res.redirect(_discordOAuth.getOAuthURL(alumno_id, cliente_id));
+});
+
+// ── Step 2: Discord redirects here after user consents ──
+// GET /auth/discord/callback?code=X&state=Y
+app.get('/auth/discord/callback', async (req, res) => {
+  const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+  const { code, state } = req.query;
+
+  if (!code || !state) {
+    return res.redirect(`${frontendUrl}?discord=error&reason=missing_params`);
+  }
+
+  const ctx = _discordOAuth.parseState(state);
+  if (!ctx?.alumno_id || !ctx?.cliente_id) {
+    return res.redirect(`${frontendUrl}?discord=error&reason=invalid_state`);
+  }
+
+  const { alumno_id, cliente_id } = ctx;
+
+  try {
+    // Exchange code for tokens
+    const tokens = await _discordOAuth.exchangeCode(code);
+
+    // Get Discord user profile
+    const dUser = await _discordOAuth.getDiscordUser(tokens.access_token);
+
+    // Load alumno from DB
+    const { data: alumno } = await supabase.from('alumnos')
+      .select('id, nombre, apellido, discord_user_id, discord_channel_id')
+      .eq('id', alumno_id).eq('cliente_id', cliente_id).maybeSingle();
+
+    if (!alumno) {
+      return res.redirect(`${frontendUrl}/formulario_semanal.html?discord=error&reason=alumno_not_found&cliente_id=${cliente_id}&alumno_id=${alumno_id}`);
+    }
+
+    // Add user to the Evoluciona guild
+    await _discord.addGuildMember(dUser.id, tokens.access_token);
+
+    // Create private channel if not already done
+    let channelId = alumno.discord_channel_id;
+    if (!channelId) {
+      const nombre   = (alumno.nombre || 'alumno').toLowerCase();
+      const chanName = `cliente-${nombre}`;
+      const chan     = await _discord.createPrivateChannel(chanName, dUser.id);
+      channelId      = chan.id;
+
+      // Welcome message in the new channel
+      const link = frontendUrl
+        ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}`
+        : '';
+      await _discord.sendChannelMessage(channelId,
+        `👋 **Bienvenido/a, ${alumno.nombre || 'alumno'}!** Este es tu canal privado en Evoluciona.\n` +
+        `Acá vas a recibir recordatorios, novedades y feedback del equipo.\n` +
+        (link ? `📋 Tu link de reporte semanal: ${link}` : '')
+      );
+    }
+
+    // Persist Discord info in alumnos
+    await supabase.from('alumnos').update({
+      discord_user_id:     dUser.id,
+      discord_username:    dUser.global_name || dUser.username,
+      discord_avatar:      dUser.avatar
+        ? `https://cdn.discordapp.com/avatars/${dUser.id}/${dUser.avatar}.png`
+        : null,
+      discord_channel_id:  channelId,
+      discord_connected_at: new Date().toISOString(),
+    }).eq('id', alumno_id);
+
+    return res.redirect(
+      `${frontendUrl}/formulario_semanal.html?discord=connected&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
+    );
+  } catch (err) {
+    console.error('Discord OAuth callback error:', err.message);
+    return res.redirect(
+      `${frontendUrl}/formulario_semanal.html?discord=error&reason=server_error&cliente_id=${cliente_id}&alumno_id=${alumno_id}`
+    );
+  }
+});
+
+// ── GET /alumnos/:id/discord — check connection status ──
+app.get('/alumnos/:id/discord', async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('alumnos')
+      .select('discord_user_id, discord_username, discord_avatar, discord_channel_id, discord_connected_at')
+      .eq('id', req.params.id).maybeSingle();
+    if (error || !data) return res.status(404).json({ connected: false });
+    res.json({ connected: !!data.discord_user_id, ...data });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── POST /discord/test-reminder — manual trigger for testing (admin only) ──
+app.post('/discord/test-reminder', validateAccess, async (req, res) => {
+  const { type = 'monday' } = req.body;
+  if (!['monday', 'friday'].includes(type)) return res.status(400).json({ error: 'type debe ser monday o friday' });
+  try {
+    await _triggerDiscordReminder(supabase, process.env.FRONTEND_URL, type);
+    res.json({ ok: true, type });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log('Server running on port', PORT);
+  _startDiscordScheduler(supabase, process.env.FRONTEND_URL);
 });
