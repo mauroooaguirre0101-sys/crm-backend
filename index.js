@@ -1682,6 +1682,15 @@ app.get('/holding/metrics', async (req, res) => {
     const { from, to } = req.query;
     const year = parseInt(req.query.year) || new Date().getFullYear();
 
+    // Fetch all holding_config percentages in one query
+    const { data: allConfigs } = await supabase.from('holding_config').select('cliente_id,porcentaje').in('cliente_id', ids);
+    const configMap = Object.fromEntries((allConfigs || []).map(c => [c.cliente_id, parseFloat(c.porcentaje) || 0]));
+
+    // Fetch success cases count per client
+    const { data: exitoRows } = await supabase.from('alumnos').select('cliente_id').in('cliente_id', ids).eq('es_caso_exito', true);
+    const exitoMap = {};
+    (exitoRows || []).forEach(r => { exitoMap[r.cliente_id] = (exitoMap[r.cliente_id] || 0) + 1; });
+
     const results = await Promise.all(ids.map(async cid => {
       // Facturación: suma de ingresos.usd filtrada por fecha
       let iq = supabase.from('ingresos').select('usd,fecha').eq('cliente_id', cid);
@@ -1694,6 +1703,12 @@ app.get('/holding/metrics', async (req, res) => {
       if (from) cq = cq.gte('created_at', from + 'T00:00:00.000Z');
       if (to)   cq = cq.lte('created_at', to   + 'T23:59:59.999Z');
       const { data: cliPeriod } = await cq;
+
+      // Gastos (egresos): suma de egresos.usd filtrada por fecha
+      let gq = supabase.from('egresos').select('usd,fecha').eq('cliente_id', cid);
+      if (from) gq = gq.gte('fecha', from);
+      if (to)   gq = gq.lte('fecha', to);
+      const { data: gasPeriod } = await gq;
 
       // Cierres: llamadas con estado Cierre
       let cq2 = supabase.from('calls').select('estado,created_at').eq('cliente_id', cid).eq('estado', 'Cierre');
@@ -1712,33 +1727,221 @@ app.get('/holding/metrics', async (req, res) => {
         .gte('created_at', `${year}-01-01T00:00:00.000Z`)
         .lte('created_at', `${year}-12-31T23:59:59.999Z`);
 
+      const { data: gasYear } = await supabase.from('egresos')
+        .select('usd,fecha').eq('cliente_id', cid)
+        .gte('fecha', `${year}-01-01`)
+        .lte('fecha', `${year}-12-31`);
+
       const { data: callYear } = await supabase.from('calls')
         .select('estado,created_at').eq('cliente_id', cid).eq('estado', 'Cierre')
         .gte('created_at', `${year}-01-01T00:00:00.000Z`)
         .lte('created_at', `${year}-12-31T23:59:59.999Z`);
 
+      const porcentaje = configMap[cid] || 0;
+
       const monthly = Array.from({ length: 12 }, (_, i) => {
         const m = String(i + 1).padStart(2, '0');
         const mIng  = (ingYear  || []).filter(x => (x.fecha || '').slice(5, 7) === m);
         const mCli  = (cliYear  || []).filter(x => (x.created_at || '').slice(5, 7) === m);
+        const mGas  = (gasYear  || []).filter(x => (x.fecha || '').slice(5, 7) === m);
         const mCall = (callYear || []).filter(x => (x.created_at || '').slice(5, 7) === m);
+        const mCC   = mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0);
+        const mGasT = mGas.reduce((s, x) => s + (parseFloat(x.usd) || 0), 0);
+        const mBal  = mCC - mGasT;
         return {
-          facturacion:   mIng.reduce((s, x) => s + (parseFloat(x.usd) || 0), 0),
-          cash_collected:mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
-          closes:        mCall.length
+          facturacion:    mIng.reduce((s, x) => s + (parseFloat(x.usd) || 0), 0),
+          cash_collected: mCC,
+          gastos:         mGasT,
+          balance_neto:   mBal,
+          ingreso_holding:mBal * porcentaje / 100,
+          closes:         mCall.length
         };
       });
 
+      const facturacion    = (ingPeriod  || []).reduce((s, x) => s + (parseFloat(x.usd)           || 0), 0);
+      const cash_collected = (cliPeriod  || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0);
+      const gastos         = (gasPeriod  || []).reduce((s, x) => s + (parseFloat(x.usd)           || 0), 0);
+      const balance_neto   = cash_collected - gastos;
+      const ingreso_holding = balance_neto * porcentaje / 100;
+
       return {
-        cliente_id:    cid,
-        facturacion:   (ingPeriod  || []).reduce((s, x) => s + (parseFloat(x.usd)           || 0), 0),
-        cash_collected:(cliPeriod  || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0),
-        closes:        (callPeriod || []).length,
+        cliente_id:     cid,
+        facturacion,
+        cash_collected,
+        gastos,
+        balance_neto,
+        porcentaje,
+        ingreso_holding,
+        casos_exito:    exitoMap[cid] || 0,
+        closes:         (callPeriod || []).length,
         monthly
       };
     }));
 
     res.json(results);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 🏢 HOLDING CONFIG (% por cliente)
+// ===============================
+app.get('/holding/config', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { data: userClients } = await supabase.from('user_clientes').select('cliente_id').eq('user_email', email).neq('cliente_id', 'holding');
+    const ids = [...new Set((userClients || []).map(x => x.cliente_id))];
+    if (!ids.length) return res.json([]);
+    const { data } = await supabase.from('holding_config').select('*').in('cliente_id', ids);
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/holding/config/:cliente_id', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { cliente_id } = req.params;
+    const porcentaje = parseFloat(req.body.porcentaje);
+    if (isNaN(porcentaje) || porcentaje < 0 || porcentaje > 100) return res.status(400).json({ error: 'Porcentaje inválido (0–100)' });
+    const { error } = await supabase.from('holding_config').upsert({ cliente_id, porcentaje, updated_at: new Date().toISOString(), updated_by: email }, { onConflict: 'cliente_id' });
+    if (error) return res.status(500).json({ error: error.message });
+    console.log(`✅ Holding config → ${cliente_id}: ${porcentaje}%`);
+    res.json({ ok: true, cliente_id, porcentaje });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 📸 HOLDING MONTHLY SNAPSHOTS
+// ===============================
+app.get('/holding/snapshots', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const ids = (req.query.cliente_ids || '').split(',').filter(Boolean);
+    if (!ids.length) return res.json([]);
+    const { data } = await supabase.from('holding_monthly_snapshots').select('*').in('cliente_id', ids).order('year', { ascending: false }).order('month', { ascending: false });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/holding/snapshot', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { cliente_id, year, month, facturacion = 0, cash_collected = 0, gastos = 0, balance_neto = 0, porcentaje = 0, ingreso_holding = 0 } = req.body;
+    if (!cliente_id || !year || !month) return res.status(400).json({ error: 'Faltan campos: cliente_id, year, month' });
+    const { data, error } = await supabase.from('holding_monthly_snapshots').upsert({
+      cliente_id, year: parseInt(year), month: parseInt(month),
+      facturacion, cash_collected, gastos, balance_neto, porcentaje, ingreso_holding,
+      snapshot_by: email, created_at: new Date().toISOString()
+    }, { onConflict: 'cliente_id,year,month' }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    console.log(`📸 Snapshot saved → ${cliente_id} ${year}/${month}`);
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 🏆 HOLDING SUCCESS CASES
+// ===============================
+app.get('/holding/success-cases', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const ids = (req.query.cliente_ids || '').split(',').filter(Boolean);
+    if (!ids.length) return res.json([]);
+    const { data } = await supabase.from('alumnos').select('cliente_id,id,nombre,apellido,caso_exito_at').in('cliente_id', ids).eq('es_caso_exito', true).order('caso_exito_at', { ascending: false });
+    const byClient = {};
+    ids.forEach(id => { byClient[id] = []; });
+    (data || []).forEach(a => { if (byClient[a.cliente_id]) byClient[a.cliente_id].push(a); });
+    res.json(byClient);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 📸 AUTO-SNAPSHOT MES ANTERIOR
+// ===============================
+// Crea automáticamente snapshots del mes anterior si no existen.
+// Se llama al abrir la tab Finanzas — corre silenciosamente.
+app.post('/holding/auto-snapshot-previous', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+
+    const ids = (req.query.cliente_ids || '').split(',').filter(Boolean);
+    if (!ids.length) return res.json({ created: [], skipped: [], year: null, month: null });
+
+    // Calcular mes anterior
+    const now = new Date();
+    const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const year  = prevMonth.getFullYear();
+    const month = prevMonth.getMonth() + 1;
+    const mStr  = String(month).padStart(2, '0');
+    const from  = `${year}-${mStr}-01`;
+    const lastDay = new Date(year, month, 0).getDate();
+    const to    = `${year}-${mStr}-${String(lastDay).padStart(2, '0')}`;
+
+    // Ver cuáles ya tienen snapshot para ese mes
+    const { data: existing } = await supabase.from('holding_monthly_snapshots')
+      .select('cliente_id').in('cliente_id', ids).eq('year', year).eq('month', month);
+    const existingSet = new Set((existing || []).map(r => r.cliente_id));
+    const toCreate = ids.filter(id => !existingSet.has(id));
+
+    if (!toCreate.length) {
+      return res.json({ created: [], skipped: [...existingSet], year, month });
+    }
+
+    // Cargar configs de porcentaje
+    const { data: configs } = await supabase.from('holding_config')
+      .select('cliente_id,porcentaje').in('cliente_id', toCreate);
+    const cfgMap = Object.fromEntries((configs || []).map(c => [c.cliente_id, parseFloat(c.porcentaje) || 0]));
+
+    const created = [];
+    for (const cid of toCreate) {
+      const [{ data: ing }, { data: cli }, { data: gas }] = await Promise.all([
+        supabase.from('ingresos').select('usd').eq('cliente_id', cid).gte('fecha', from).lte('fecha', to),
+        supabase.from('clientes').select('cash_collected').eq('cliente_id', cid)
+          .gte('created_at', `${from}T00:00:00.000Z`).lte('created_at', `${to}T23:59:59.999Z`),
+        supabase.from('egresos').select('usd').eq('cliente_id', cid).gte('fecha', from).lte('fecha', to),
+      ]);
+      const facturacion    = (ing  || []).reduce((s, x) => s + (parseFloat(x.usd)           || 0), 0);
+      const cash_collected = (cli  || []).reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0);
+      const gastos         = (gas  || []).reduce((s, x) => s + (parseFloat(x.usd)           || 0), 0);
+      const balance_neto   = cash_collected - gastos;
+      const porcentaje     = cfgMap[cid] || 0;
+      const ingreso_holding = balance_neto * porcentaje / 100;
+
+      const { error } = await supabase.from('holding_monthly_snapshots').upsert({
+        cliente_id: cid, year, month,
+        facturacion, cash_collected, gastos, balance_neto, porcentaje, ingreso_holding,
+        snapshot_by: email + '[auto]', created_at: new Date().toISOString(),
+      }, { onConflict: 'cliente_id,year,month' });
+
+      if (!error) created.push(cid);
+      else console.warn(`⚠ Auto-snapshot error ${cid}:`, error.message);
+    }
+
+    console.log(`📸 Auto-snapshot ${year}/${month}: creados=${created.length} skip=${existingSet.size}`);
+    res.json({ created, skipped: [...existingSet], year, month });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ===============================
+// 💹 HOLDING PCT (para CRM individual)
+// ===============================
+// Retorna el % de holding configurado para el cliente actual.
+// Accesible por cualquier usuario autenticado del cliente.
+app.get('/holding-pct', validateAccess, async (req, res) => {
+  try {
+    const { data } = await supabase.from('holding_config')
+      .select('porcentaje').eq('cliente_id', req.cliente_id).maybeSingle();
+    res.json({ porcentaje: parseFloat(data?.porcentaje) || 0 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
