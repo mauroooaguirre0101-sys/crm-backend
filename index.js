@@ -1325,6 +1325,49 @@ app.get('/reportes', validateAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Helper: límites de semana actual (Lun 00:00 – Dom 23:59 UTC) ──
+function _currentWeekBounds() {
+  const now = new Date();
+  const dow = now.getUTCDay(); // 0=Dom
+  const daysToMon = dow === 0 ? 6 : dow - 1;
+  const mon = new Date(now); mon.setUTCDate(now.getUTCDate() - daysToMon); mon.setUTCHours(0, 0, 0, 0);
+  const sun = new Date(mon); sun.setUTCDate(mon.getUTCDate() + 6); sun.setUTCHours(23, 59, 59, 999);
+  return { start: mon.toISOString(), end: sun.toISOString() };
+}
+
+// ── Público: check estado del reporte de la semana actual para un alumno ──
+app.get('/reportes/check/:alumno_id', async (req, res) => {
+  try {
+    const { alumno_id } = req.params;
+    const { cliente_id } = req.query;
+    if (!alumno_id || !cliente_id) return res.status(400).json({ error: 'Faltan parámetros' });
+    const { start, end } = _currentWeekBounds();
+    const { data: rep } = await supabase
+      .from('reportes_semanales')
+      .select('*')
+      .eq('alumno_id', alumno_id)
+      .eq('cliente_id', cliente_id)
+      .gte('submitted_at', start)
+      .lte('submitted_at', end)
+      .order('submitted_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!rep) return res.json({ hasReport: false });
+    const now = new Date();
+    const editable = rep.editable_until ? new Date(rep.editable_until) > now : false;
+    const locked = rep.locked && !editable;
+    // Check if there's a pending edit request
+    const { data: req_ } = await supabase
+      .from('weekly_report_edit_requests')
+      .select('id,estado')
+      .eq('reporte_id', rep.id)
+      .in('estado', ['pending'])
+      .limit(1)
+      .maybeSingle();
+    res.json({ hasReport: true, reporte_id: rep.id, locked, editable, editable_until: rep.editable_until, report: rep, pendingRequest: !!req_ });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Público: alumnos envían su reporte sin necesitar auth
 app.post('/reportes', async (req, res) => {
   try {
@@ -1332,7 +1375,6 @@ app.post('/reportes', async (req, res) => {
             situacion, objetivos, logros, problemas, ayuda,
             implementacion, porque_no, extra } = req.body;
     if (!cliente_id) return res.status(400).json({ error: 'Falta cliente_id' });
-    // Verificar que el cliente_id existe
     const { data: check } = await supabase.from('user_clientes')
       .select('cliente_id').eq('cliente_id', cliente_id).limit(1);
     if (!check || check.length === 0) return res.status(400).json({ error: 'Cliente inválido' });
@@ -1340,13 +1382,11 @@ app.post('/reportes', async (req, res) => {
     // Auto-asignar alumno por instagram si no viene alumno_id
     const igClean = instagram ? instagram.toLowerCase().replace(/^@+/, '').trim() : '';
     if (!alumno_id && igClean) {
-      // 1. Busca directo en alumnos por instagram
       const { data: matchDirect } = await supabase.from('alumnos')
         .select('id').eq('cliente_id', cliente_id).eq('instagram', igClean).maybeSingle();
       if (matchDirect) {
         alumno_id = matchDirect.id;
       } else {
-        // 2. Fallback: busca por clientes.instagram → alumnos.source_id
         const { data: matchCliente } = await supabase.from('clientes')
           .select('id').eq('cliente_id', cliente_id).eq('instagram', igClean).maybeSingle();
         if (matchCliente) {
@@ -1357,12 +1397,45 @@ app.post('/reportes', async (req, res) => {
       }
     }
 
+    // ── Bloqueo por período semanal ──
+    if (alumno_id) {
+      const { start, end } = _currentWeekBounds();
+      const { data: existing } = await supabase
+        .from('reportes_semanales')
+        .select('id, locked, editable_until')
+        .eq('alumno_id', alumno_id)
+        .eq('cliente_id', cliente_id)
+        .gte('submitted_at', start)
+        .lte('submitted_at', end)
+        .limit(1)
+        .maybeSingle();
+
+      if (existing) {
+        const now = new Date();
+        const editableUntil = existing.editable_until ? new Date(existing.editable_until) : null;
+        const canEdit = editableUntil && editableUntil > now;
+
+        if (!canEdit) {
+          // Reporte bloqueado
+          return res.status(409).json({ error: 'Ya enviaste el reporte de esta semana', locked: true, reporte_id: existing.id });
+        }
+
+        // Edición temporal aprobada — actualizar el reporte existente
+        const fields = { situacion, objetivos, logros, problemas, ayuda: ayuda || [], implementacion, porque_no: porque_no || '', extra: extra || '', estado: estado || '', semana: semana || '', locked: true, editable_until: null };
+        const { data: updated, error: updErr } = await supabase
+          .from('reportes_semanales').update(fields).eq('id', existing.id).select().single();
+        if (updErr) return res.status(500).json({ error: updErr.message });
+        return res.json({ ...updated, updated: true });
+      }
+    }
+
+    const now = new Date();
     const { data, error } = await supabase.from('reportes_semanales').insert([{
       cliente_id,
       alumno_id: alumno_id || null,
       nombre: nombre || '',
       apellido: apellido || '',
-      instagram: instagram ? instagram.toLowerCase().replace(/^@/, '') : '',
+      instagram: igClean || (instagram ? instagram.toLowerCase().replace(/^@/, '') : ''),
       semana: semana || '',
       estado: estado || '',
       situacion: situacion || '',
@@ -1373,9 +1446,79 @@ app.post('/reportes', async (req, res) => {
       implementacion: implementacion || '',
       porque_no: porque_no || '',
       extra: extra || '',
+      submitted_at: now.toISOString(),
+      locked: true,
+      editable_until: null,
     }]).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Público: alumno solicita edición de su reporte ──
+app.post('/reportes/:id/request-edit', async (req, res) => {
+  try {
+    const { alumno_id, cliente_id, motivo } = req.body;
+    if (!alumno_id || !cliente_id || !motivo?.trim()) return res.status(400).json({ error: 'Faltan campos requeridos' });
+    // Verificar que el reporte pertenece al alumno
+    const { data: rep } = await supabase.from('reportes_semanales')
+      .select('id').eq('id', req.params.id).eq('alumno_id', alumno_id).eq('cliente_id', cliente_id).maybeSingle();
+    if (!rep) return res.status(404).json({ error: 'Reporte no encontrado' });
+    // Evitar solicitudes duplicadas pendientes
+    const { data: existing } = await supabase.from('weekly_report_edit_requests')
+      .select('id').eq('reporte_id', req.params.id).eq('estado', 'pending').maybeSingle();
+    if (existing) return res.status(409).json({ error: 'Ya tenés una solicitud pendiente para este reporte' });
+    const { data, error } = await supabase.from('weekly_report_edit_requests').insert([{
+      reporte_id: req.params.id,
+      alumno_id,
+      cliente_id,
+      motivo: motivo.trim(),
+      estado: 'pending',
+    }]).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true, id: data.id });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Admin: ver solicitudes de edición ──
+app.get('/reportes/edit-requests', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('weekly_report_edit_requests')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    // Join report info
+    const reporteIds = [...new Set((data || []).map(r => r.reporte_id))];
+    let reportesMap = {};
+    if (reporteIds.length) {
+      const { data: reps } = await supabase.from('reportes_semanales')
+        .select('id,nombre,apellido,instagram,semana,alumno_id').in('id', reporteIds);
+      (reps || []).forEach(r => { reportesMap[r.id] = r; });
+    }
+    res.json((data || []).map(r => ({ ...r, reporte: reportesMap[r.reporte_id] || null })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Admin: aprobar o rechazar solicitud de edición ──
+app.patch('/reportes/edit-requests/:id', validateAccess, async (req, res) => {
+  try {
+    const { action } = req.body; // 'approve' | 'reject'
+    if (!['approve', 'reject'].includes(action)) return res.status(400).json({ error: 'action debe ser approve o reject' });
+    const { data: editReq } = await supabase.from('weekly_report_edit_requests')
+      .select('*').eq('id', req.params.id).eq('cliente_id', req.cliente_id).maybeSingle();
+    if (!editReq) return res.status(404).json({ error: 'Solicitud no encontrada' });
+    const now = new Date();
+    const updates = { estado: action === 'approve' ? 'approved' : 'rejected', approved_by: req.user?.user_email || null, approved_at: now.toISOString() };
+    await supabase.from('weekly_report_edit_requests').update(updates).eq('id', req.params.id);
+    if (action === 'approve') {
+      const editableUntil = new Date(now.getTime() + 2 * 60 * 60 * 1000); // +2 horas
+      await supabase.from('reportes_semanales')
+        .update({ locked: false, editable_until: editableUntil.toISOString() })
+        .eq('id', editReq.reporte_id);
+    }
+    res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
