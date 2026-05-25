@@ -181,7 +181,7 @@ const _anthropic = process.env.ANTHROPIC_API_KEY
 // 🎮 Discord modules
 const _discord          = require('./discord.service');
 const _discordOAuth     = require('./discord.oauth');
-const { startScheduler: _startDiscordScheduler, triggerReminder: _triggerDiscordReminder } = require('./discord.scheduler');
+const { startScheduler: _startDiscordScheduler, triggerReminder: _triggerDiscordReminder, sendWeeklyReports: _sendWeeklyReports } = require('./discord.scheduler');
 const { startGateway: _startDiscordGateway } = require('./discord.gateway');
 
 const AI_BASE_SYSTEM = `Eres un analista estratégico de ventas de alto ticket especializado en el mercado hispanohablante. Tu rol es analizar transcripts de llamadas de ventas y actuar como un consultor experto.
@@ -3667,14 +3667,17 @@ app.get('/alumnos/:id/discord', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── POST /discord/test-reminder — manual trigger for testing (admin only) ──
-app.post('/discord/test-reminder', validateAccess, async (req, res) => {
-  const { type = 'monday' } = req.body;
-  if (!['monday', 'friday'].includes(type)) return res.status(400).json({ error: 'type debe ser monday o friday' });
+// ── POST /discord/send-weekly-report — manual trigger (admin only) ──
+app.post('/discord/send-weekly-report', validateAccess, async (req, res) => {
+  if (!process.env.DISCORD_BOT_TOKEN)
+    return res.status(503).json({ error: 'DISCORD_BOT_TOKEN no configurado' });
   try {
-    await _triggerDiscordReminder(supabase, process.env.FRONTEND_URL, type);
-    res.json({ ok: true, type });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const stats = await _sendWeeklyReports(supabase, process.env.FRONTEND_URL);
+    res.json({ ok: true, ...stats });
+  } catch (err) {
+    console.error('POST /discord/send-weekly-report:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 🚀 SERVER
