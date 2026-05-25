@@ -3554,14 +3554,28 @@ async function _discordNotify(event, payload) {
   }
 }
 
-// ── Step 1: Redirect user to Discord consent screen ──
+// ── Step 1: Validate identity then redirect to Discord consent screen ──
 // GET /auth/discord/login?alumno_id=X&cliente_id=Y
-app.get('/auth/discord/login', (req, res) => {
+app.get('/auth/discord/login', async (req, res) => {
   const { alumno_id, cliente_id } = req.query;
-  if (!alumno_id || !cliente_id) return res.status(400).json({ error: 'Faltan alumno_id y cliente_id' });
-  if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_REDIRECT_URI) {
-    return res.status(503).json({ error: 'Discord OAuth no configurado' });
-  }
+
+  if (!alumno_id || !cliente_id)
+    return res.status(400).json({ error: 'Faltan alumno_id y cliente_id en la URL' });
+
+  if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_REDIRECT_URI)
+    return res.status(503).json({ error: 'Discord OAuth no configurado en el servidor' });
+
+  // Validate alumno exists and belongs to this cliente
+  const { data: alumno, error } = await supabase
+    .from('alumnos')
+    .select('id')
+    .eq('id', alumno_id)
+    .eq('cliente_id', cliente_id)
+    .maybeSingle();
+
+  if (error) return res.status(500).json({ error: 'Error al verificar identidad' });
+  if (!alumno) return res.status(404).json({ error: 'Alumno no encontrado o no pertenece a este cliente' });
+
   res.redirect(_discordOAuth.getOAuthURL(alumno_id, cliente_id));
 });
 
