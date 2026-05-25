@@ -1716,6 +1716,12 @@ app.get('/holding/metrics', async (req, res) => {
       if (to)   cq2 = cq2.lte('created_at', to   + 'T23:59:59.999Z');
       const { data: callPeriod } = await cq2;
 
+      // Agendas: leads con estado Agendado
+      let aq = supabase.from('leads').select('estado,created_at').eq('cliente_id', cid).eq('estado', 'Agendado');
+      if (from) aq = aq.gte('created_at', from + 'T00:00:00.000Z');
+      if (to)   aq = aq.lte('created_at', to   + 'T23:59:59.999Z');
+      const { data: agPeriod } = await aq;
+
       // Datos anuales para gráfico de evolución mensual
       const { data: ingYear } = await supabase.from('ingresos')
         .select('usd,fecha').eq('cliente_id', cid)
@@ -1737,6 +1743,11 @@ app.get('/holding/metrics', async (req, res) => {
         .gte('created_at', `${year}-01-01T00:00:00.000Z`)
         .lte('created_at', `${year}-12-31T23:59:59.999Z`);
 
+      const { data: agYear } = await supabase.from('leads')
+        .select('estado,created_at').eq('cliente_id', cid).eq('estado', 'Agendado')
+        .gte('created_at', `${year}-01-01T00:00:00.000Z`)
+        .lte('created_at', `${year}-12-31T23:59:59.999Z`);
+
       const porcentaje = configMap[cid] || 0;
 
       const monthly = Array.from({ length: 12 }, (_, i) => {
@@ -1748,13 +1759,17 @@ app.get('/holding/metrics', async (req, res) => {
         const mCC   = mCli.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0);
         const mGasT = mGas.reduce((s, x) => s + (parseFloat(x.usd) || 0), 0);
         const mBal  = mCC - mGasT;
+        const mFact = mIng.reduce((s, x) => s + (parseFloat(x.usd) || 0), 0);
+        const mAg   = (agYear || []).filter(x => (x.created_at || '').slice(5, 7) === m).length;
         return {
-          facturacion:    mIng.reduce((s, x) => s + (parseFloat(x.usd) || 0), 0),
-          cash_collected: mCC,
-          gastos:         mGasT,
-          balance_neto:   mBal,
-          ingreso_holding:mBal * porcentaje / 100,
-          closes:         mCall.length
+          facturacion:     mFact,
+          cash_collected:  mCC,
+          gastos:          mGasT,
+          balance_neto:    mBal,
+          ingreso_holding: mBal * porcentaje / 100,
+          closes:          mCall.length,
+          agendas:         mAg,
+          aov:             mCall.length > 0 ? Math.round(mFact / mCall.length) : 0
         };
       });
 
@@ -1763,6 +1778,10 @@ app.get('/holding/metrics', async (req, res) => {
       const gastos         = (gasPeriod  || []).reduce((s, x) => s + (parseFloat(x.usd)           || 0), 0);
       const balance_neto   = cash_collected - gastos;
       const ingreso_holding = balance_neto * porcentaje / 100;
+
+      const closes  = (callPeriod || []).length;
+      const agendas = (agPeriod  || []).length;
+      const aov     = closes > 0 ? Math.round(facturacion / closes) : 0;
 
       return {
         cliente_id:     cid,
@@ -1773,7 +1792,9 @@ app.get('/holding/metrics', async (req, res) => {
         porcentaje,
         ingreso_holding,
         casos_exito:    exitoMap[cid] || 0,
-        closes:         (callPeriod || []).length,
+        closes,
+        agendas,
+        aov,
         monthly
       };
     }));
