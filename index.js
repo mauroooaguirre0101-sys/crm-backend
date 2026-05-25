@@ -3667,6 +3667,58 @@ app.get('/alumnos/:id/discord', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── GET /discord/debug — diagnose why no alumnos are found (admin only) ──
+app.get('/discord/debug', validateAccess, async (req, res) => {
+  try {
+    // Check if columns exist by fetching one row with all discord fields
+    const { data: sample, error: colErr } = await supabase
+      .from('alumnos')
+      .select('id, nombre, discord_user_id, discord_channel_id, discord_connected_at')
+      .eq('cliente_id', req.cliente_id)
+      .limit(3);
+
+    if (colErr) return res.json({ error: colErr.message, hint: 'Las columnas discord_* probablemente no existen — ejecutá la migración SQL' });
+
+    // Count alumnos total vs connected
+    const { count: total } = await supabase
+      .from('alumnos')
+      .select('id', { count: 'exact', head: true })
+      .eq('cliente_id', req.cliente_id);
+
+    const { count: withUserId } = await supabase
+      .from('alumnos')
+      .select('id', { count: 'exact', head: true })
+      .eq('cliente_id', req.cliente_id)
+      .not('discord_user_id', 'is', null);
+
+    const { count: withChannel } = await supabase
+      .from('alumnos')
+      .select('id', { count: 'exact', head: true })
+      .eq('cliente_id', req.cliente_id)
+      .not('discord_channel_id', 'is', null);
+
+    const { count: ready } = await supabase
+      .from('alumnos')
+      .select('id', { count: 'exact', head: true })
+      .eq('cliente_id', req.cliente_id)
+      .not('discord_user_id', 'is', null)
+      .not('discord_channel_id', 'is', null);
+
+    res.json({
+      columns_exist: true,
+      total_alumnos: total,
+      with_discord_user_id: withUserId,
+      with_discord_channel_id: withChannel,
+      ready_to_receive: ready,
+      sample_rows: sample,
+      bot_token_set: !!process.env.DISCORD_BOT_TOKEN,
+      frontend_url: process.env.FRONTEND_URL || '(no configurado)',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── POST /discord/send-weekly-report — manual trigger (admin only) ──
 app.post('/discord/send-weekly-report', validateAccess, async (req, res) => {
   if (!process.env.DISCORD_BOT_TOKEN)
