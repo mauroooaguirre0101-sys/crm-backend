@@ -12,6 +12,7 @@
     "@anthropic-ai/sdk": "latest",
     "@supabase/supabase-js": "^2.0.0",
     "cors": "^2.8.5",
+    "discord.js": "^14.26.4",
     "express": "^4.18.2",
     "nodemailer": "^8.0.7",
     "resend": "^6.12.3",

@@ -182,6 +182,7 @@ const _anthropic = process.env.ANTHROPIC_API_KEY
 const _discord          = require('./discord.service');
 const _discordOAuth     = require('./discord.oauth');
 const { startScheduler: _startDiscordScheduler, triggerReminder: _triggerDiscordReminder } = require('./discord.scheduler');
+const { startGateway: _startDiscordGateway } = require('./discord.gateway');
 
 const AI_BASE_SYSTEM = `Eres un analista estratégico de ventas de alto ticket especializado en el mercado hispanohablante. Tu rol es analizar transcripts de llamadas de ventas y actuar como un consultor experto.
 
@@ -3667,5 +3668,6 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log('Server running on port', PORT);
+  _startDiscordGateway();
   _startDiscordScheduler(supabase, process.env.FRONTEND_URL);
 });
