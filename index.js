@@ -1776,6 +1776,38 @@ app.delete('/sops/:id', validateAccess, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Baúl de Ideas para contenido ──
+app.get('/ideas', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('ideas_contenido')
+      .select('*').eq('cliente_id', req.cliente_id).order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/ideas', validateAccess, async (req, res) => {
+  try {
+    const { idea, motivo, area } = req.body;
+    if (!idea?.trim()) return res.status(400).json({ error: 'La idea es obligatoria' });
+    if (!['Marketing', 'Ventas', 'Producto'].includes(area)) return res.status(400).json({ error: 'Área inválida' });
+    const { data, error } = await supabase.from('ideas_contenido')
+      .insert([{ cliente_id: req.cliente_id, idea: idea.trim(), motivo: (motivo||'').trim(), area }])
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/ideas/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('ideas_contenido')
+      .delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===============================
 // 🏛 FUNDACIONES
 // ===============================
