@@ -4233,13 +4233,6 @@ async function _getCalendlyToken(negocio_id) {
 
 // Insert a new call into the `calls` table (the table "Llamadas de venta" reads from)
 async function _calendlyCreateCall(inv, cliente_id) {
-  const now   = new Date().toISOString();
-  const notes = [
-    inv.email    ? `Email: ${inv.email}`    : null,
-    inv.telefono ? `Teléfono: ${inv.telefono}` : null,
-    ...Object.entries(inv.formResponses).map(([q, a]) => `${q}: ${a}`),
-  ].filter(Boolean).join('\n');
-
   // Count existing calls for this instagram to set numero_llamada
   const instagramKey = inv.instagram || '';
   let numero_llamada = 1;
@@ -4249,22 +4242,25 @@ async function _calendlyCreateCall(inv, cliente_id) {
     numero_llamada = (prev?.length || 0) + 1;
   }
 
+  // Form responses stored as JSONB — visible in "Reporte Calendly" column; info_previa left for setter
+  const formResponsesObj = Object.keys(inv.formResponses || {}).length > 0 ? inv.formResponses : null;
+
   // Full row with all Calendly-specific columns
   const fullRow = {
     cliente_id,
-    nombre:               inv.name      || 'Sin nombre',
-    instagram:            instagramKey,
-    whatsapp:             inv.telefono  || '',
-    info_previa:          notes,
-    origen:               'Calendly',
-    estado:               'Pendiente',
+    nombre:                    inv.name      || 'Sin nombre',
+    instagram:                 instagramKey,
+    whatsapp:                  inv.telefono  || '',
+    origen:                    'Calendly',
+    estado:                    'Pendiente',
     numero_llamada,
-    seguimientos:         0,
-    responde:             false,
-    fecha_llamada:        inv.startTime  || null,
-    link_llamada:         inv.meetingLink || null,
-    calendly_invitee_uri: inv.uri        || null,
-    email:                inv.email      || null,
+    seguimientos:              0,
+    responde:                  false,
+    fecha_llamada:             inv.startTime  || null,
+    link_llamada:              inv.meetingLink || null,
+    calendly_invitee_uri:      inv.uri        || null,
+    email:                     inv.email      || null,
+    calendly_form_responses:   formResponsesObj,
   };
 
   console.log(`[Calendly Lead Sync] Attempting INSERT into calls — cliente=${cliente_id} nombre="${inv.name}" email=${inv.email} fecha=${inv.startTime}`);
@@ -4279,7 +4275,6 @@ async function _calendlyCreateCall(inv, cliente_id) {
       nombre:        inv.name     || 'Sin nombre',
       instagram:     instagramKey,
       whatsapp:      inv.telefono || '',
-      info_previa:   notes,
       origen:        'Calendly',
       estado:        'Pendiente',
       numero_llamada,
