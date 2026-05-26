@@ -121,6 +121,19 @@ async function getGuildMember(discordUserId, cfg = {}) {
   } catch { return null; }
 }
 
+// Assign a role to a guild member
+async function addRoleToMember(discordUserId, roleId, cfg = {}) {
+  const { guildId } = _resolveGuild(cfg);
+  if (!guildId || !roleId) return;
+  try {
+    await _req('PUT', `/guilds/${guildId}/members/${discordUserId}/roles/${roleId}`);
+    console.log(`[Discord] addRoleToMember — user=${discordUserId} role=${roleId} guild=${guildId}`);
+  } catch (err) {
+    const hint = _parseDiscordError(err.message);
+    console.warn(`[Discord] addRoleToMember warn: ${err.message}${hint ? ` → ${hint}` : ''}`);
+  }
+}
+
 // Find an existing channel where discordUserId has an explicit overwrite (anti-duplicate)
 async function findChannelByUser(discordUserId, cfg = {}) {
   const { guildId } = _resolveGuild(cfg);
@@ -138,6 +151,7 @@ async function findChannelByUser(discordUserId, cfg = {}) {
 
 module.exports = {
   addGuildMember,
+  addRoleToMember,
   createPrivateChannel,
   sendChannelMessage,
   sendEmbed,

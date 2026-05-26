@@ -3805,23 +3805,24 @@ async function _discordNotify(event, payload) {
 app.get('/discord/config', validateAccess, async (req, res) => {
   try {
     const { data } = await supabase.from('discord_config').select('*').eq('cliente_id', req.cliente_id).maybeSingle();
-    res.json(data || { cliente_id: req.cliente_id, enabled: false, guild_id: null, category_id: null, invite_link: null, admin_role_id: null, schedule_days: '1,5', schedule_utc_hour: 12, schedule_utc_min: 0 });
+    res.json(data || { cliente_id: req.cliente_id, enabled: false, guild_id: null, category_id: null, invite_link: null, admin_role_id: null, student_role_id: null, schedule_days: '1,5', schedule_utc_hour: 12, schedule_utc_min: 0 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── PUT /discord/config ──
 app.put('/discord/config', validateAccess, async (req, res) => {
   try {
-    const { guild_id, category_id, invite_link, admin_role_id, enabled, schedule_days, schedule_utc_hour, schedule_utc_min } = req.body;
+    const { guild_id, category_id, invite_link, admin_role_id, student_role_id, enabled, schedule_days, schedule_utc_hour, schedule_utc_min } = req.body;
     const email = req.headers['x-user-email'];
     const { error } = await supabase.from('discord_config').upsert({
       cliente_id:        req.cliente_id,
-      guild_id:          guild_id        || null,
-      category_id:       category_id     || null,
-      invite_link:       invite_link     || null,
-      admin_role_id:     admin_role_id   || null,
+      guild_id:          guild_id          || null,
+      category_id:       category_id       || null,
+      invite_link:       invite_link       || null,
+      admin_role_id:     admin_role_id     || null,
+      student_role_id:   student_role_id   || null,
       enabled:           Boolean(enabled),
-      schedule_days:     schedule_days   || '1,5',
+      schedule_days:     schedule_days     || '1,5',
       schedule_utc_hour: parseInt(schedule_utc_hour) || 12,
       schedule_utc_min:  parseInt(schedule_utc_min)  || 0,
       updated_at:        new Date().toISOString(),
@@ -3961,6 +3962,11 @@ app.get('/auth/discord/callback', async (req, res) => {
     // Add user to the correct guild
     await _discord.addGuildMember(dUser.id, tokens.access_token, guildCfg);
     console.log(`[Discord OAuth] guild join OK — guild=${guildCfg.guild_id || process.env.DISCORD_GUILD_ID}`);
+
+    // Assign student role if configured
+    if (guildCfg.student_role_id) {
+      await _discord.addRoleToMember(dUser.id, guildCfg.student_role_id, guildCfg);
+    }
 
     // Create private channel if not already done
     let channelId = alumno.discord_channel_id;
