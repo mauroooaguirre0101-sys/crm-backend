@@ -184,6 +184,7 @@ const _discordOAuth     = require('./discord.oauth');
 const { startScheduler: _startDiscordScheduler, triggerReminder: _triggerDiscordReminder, sendWeeklyReports: _sendWeeklyReports } = require('./discord.scheduler');
 const { startGateway: _startDiscordGateway } = require('./discord.gateway');
 const { verifySignature: _calendlyVerify, extractInvitee: _calendlyExtract } = require('./calendly.service');
+const _calendlyOAuth = require('./calendly.oauth');
 
 const AI_BASE_SYSTEM = `Eres un analista estratégico de ventas de alto ticket especializado en el mercado hispanohablante. Tu rol es analizar transcripts de llamadas de ventas y actuar como un consultor experto.
 
@@ -4191,7 +4192,7 @@ app.post('/discord/send-weekly-report', async (req, res) => {
 });
 
 // ══════════════════════════════════════════
-// 🗓  CALENDLY INTEGRATION
+// 🗓  CALENDLY INTEGRATION (OAuth per-negocio)
 // ══════════════════════════════════════════
 
 // In-memory webhook log (last 50 events) for /calendly/debug
@@ -4199,6 +4200,32 @@ const _calendlyWebhookLog = [];
 function _logCalendlyWebhook(entry) {
   _calendlyWebhookLog.unshift({ ...entry, at: new Date().toISOString() });
   if (_calendlyWebhookLog.length > 50) _calendlyWebhookLog.pop();
+}
+
+// Get and auto-refresh the token for a negocio's Calendly connection
+async function _getCalendlyToken(negocio_id) {
+  const { data: conn } = await supabase
+    .from('calendly_connections')
+    .select('*')
+    .eq('negocio_id', negocio_id)
+    .maybeSingle();
+  if (!conn) return null;
+
+  try {
+    const result = await _calendlyOAuth.ensureFreshToken(conn);
+    if (result.updated) {
+      await supabase.from('calendly_connections').update({
+        access_token:     result.accessToken,
+        refresh_token:    result.newRefresh,
+        token_expires_at: result.newExpires,
+      }).eq('negocio_id', negocio_id);
+      console.log(`[Calendly OAuth] Token refreshed for negocio=${negocio_id}`);
+    }
+    return { ...conn, access_token: result.accessToken };
+  } catch (err) {
+    console.error(`[Calendly OAuth] Token refresh failed negocio=${negocio_id}:`, err.message);
+    return conn; // return stale token, let the caller handle the error
+  }
 }
 
 async function _calendlyCreateLead(inv, cliente_id) {
@@ -4254,7 +4281,7 @@ async function _calendlyCreateLead(inv, cliente_id) {
   return data.id;
 }
 
-// POST /webhooks/calendly — receives Calendly webhook events
+// POST /webhooks/calendly — receives Calendly webhook events (OAuth + legacy mapping)
 app.post('/webhooks/calendly', async (req, res) => {
   try {
     // Signature verification using raw body
@@ -4272,40 +4299,49 @@ app.post('/webhooks/calendly', async (req, res) => {
 
     console.log(`[Calendly Webhook] event=${eventType}`);
 
-    const inv          = _calendlyExtract(payload);
-    const eventTypeUri = inv.eventTypeUri;
-
-    // Resolve cliente_id from event_type mapping
+    const inv = _calendlyExtract(payload);
     let cliente_id = null;
-    if (eventTypeUri) {
+
+    // ── Primary: OAuth connection identified by URL token (?t=TOKEN) ──
+    const webhookToken = req.query.t;
+    if (webhookToken) {
+      const { data: conn } = await supabase
+        .from('calendly_connections')
+        .select('negocio_id')
+        .eq('webhook_token', webhookToken)
+        .maybeSingle();
+      if (conn) {
+        cliente_id = conn.negocio_id;
+        console.log(`[Calendly OAuth] Webhook identified by token → negocio=${cliente_id}`);
+      }
+    }
+
+    // ── Fallback: legacy event_type → event_mappings lookup ──
+    if (!cliente_id && inv.eventTypeUri) {
       const { data: mapping } = await supabase
         .from('calendly_event_mappings')
         .select('cliente_id')
-        .eq('calendly_event_uri', eventTypeUri)
+        .eq('calendly_event_uri', inv.eventTypeUri)
         .maybeSingle();
       if (mapping) {
         cliente_id = mapping.cliente_id;
-        console.log(`[Calendly Event Mapped] event_uri=${eventTypeUri} → cliente_id=${cliente_id}`);
+        console.log(`[Calendly Event Mapped] event_uri=${inv.eventTypeUri} → cliente_id=${cliente_id}`);
       }
     }
 
     if (!cliente_id) {
-      console.warn(`[Calendly Webhook] No mapping found for event_uri=${eventTypeUri} — logged but ignored`);
-      _logCalendlyWebhook({ eventType, eventTypeUri, inviteeUri: inv.uri, cliente_id: null, status: 'no_mapping' });
-      return res.json({ ok: true, warning: 'No mapping found for this event type' });
+      console.warn(`[Calendly Webhook] No mapping — token=${webhookToken || 'none'} event_uri=${inv.eventTypeUri || 'none'}`);
+      _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id: null, status: 'no_mapping' });
+      return res.json({ ok: true, warning: 'No mapping found' });
     }
 
-    _logCalendlyWebhook({ eventType, eventTypeUri, inviteeUri: inv.uri, cliente_id, status: 'processing' });
+    _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'processing' });
 
     if (eventType === 'invitee.created') {
-      // Deduplication: skip if invitee URI already exists
+      // Deduplication: skip if this invitee URI was already processed
       if (inv.uri) {
-        const { data: dup } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('cliente_id', cliente_id)
-          .eq('calendly_invitee_uri', inv.uri)
-          .maybeSingle();
+        const { data: dup } = await supabase.from('leads').select('id')
+          .eq('cliente_id', cliente_id).eq('calendly_invitee_uri', inv.uri).maybeSingle();
         if (dup) {
           console.log(`[Calendly Webhook] Duplicate invitee ${inv.uri} — skipped`);
           return res.json({ ok: true, info: 'duplicate' });
@@ -4317,10 +4353,9 @@ app.post('/webhooks/calendly', async (req, res) => {
       const now = new Date().toISOString();
       const { error } = await supabase.from('leads')
         .update({ estado: 'Perdido', ultima_accion: 'Canceló llamada Calendly', updated_at: now })
-        .eq('cliente_id', cliente_id)
-        .eq('calendly_invitee_uri', inv.uri);
+        .eq('cliente_id', cliente_id).eq('calendly_invitee_uri', inv.uri);
       if (error) console.warn('[Calendly Webhook] cancel update warn:', error.message);
-      else console.log(`[Calendly Webhook] invitee.canceled — lead updated to Perdido uri=${inv.uri}`);
+      else console.log(`[Calendly Webhook] invitee.canceled → Perdido uri=${inv.uri}`);
 
     } else if (eventType === 'invitee.rescheduled') {
       const now = new Date().toISOString();
@@ -4334,12 +4369,10 @@ app.post('/webhooks/calendly', async (req, res) => {
             ultima_accion:        'Reagendó llamada Calendly',
             updated_at:           now,
           })
-          .eq('cliente_id', cliente_id)
-          .eq('calendly_invitee_uri', inv.oldInviteeUri);
+          .eq('cliente_id', cliente_id).eq('calendly_invitee_uri', inv.oldInviteeUri);
         if (error) console.warn('[Calendly Webhook] reschedule update warn:', error.message);
-        else console.log(`[Calendly Webhook] invitee.rescheduled — lead updated old=${inv.oldInviteeUri}`);
+        else console.log(`[Calendly Webhook] invitee.rescheduled old=${inv.oldInviteeUri}`);
       } else {
-        // No old URI reference — create new lead
         await _calendlyCreateLead(inv, cliente_id);
       }
     }
@@ -4347,6 +4380,163 @@ app.post('/webhooks/calendly', async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error('[Calendly Webhook] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /calendly/connect?cliente_id=X — redirect to Calendly OAuth
+app.get('/calendly/connect', (req, res) => {
+  const { cliente_id } = req.query;
+  if (!cliente_id) return res.status(400).send('Missing cliente_id');
+  if (!process.env.CALENDLY_CLIENT_ID) return res.status(503).send('CALENDLY_CLIENT_ID not configured');
+
+  const backendUrl  = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+  const redirectUri = `${backendUrl}/calendly/callback`;
+  const state       = Buffer.from(JSON.stringify({ cliente_id, nonce: require('crypto').randomBytes(8).toString('hex') })).toString('base64url');
+
+  const authUrl = _calendlyOAuth.buildOAuthURL(redirectUri, state);
+  console.log(`[Calendly OAuth] Redirecting negocio=${cliente_id} to Calendly auth`);
+  res.redirect(authUrl);
+});
+
+// GET /calendly/callback — OAuth callback from Calendly
+app.get('/calendly/callback', async (req, res) => {
+  const { code, state, error: oauthError } = req.query;
+  const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+
+  if (oauthError) {
+    console.warn('[Calendly OAuth] User denied access:', oauthError);
+    return res.send(_calendlyPopupPage(false, null, `Acceso denegado: ${oauthError}`));
+  }
+  if (!code || !state) return res.status(400).send('Missing code or state');
+
+  let cliente_id;
+  try {
+    const decoded = JSON.parse(Buffer.from(state, 'base64url').toString());
+    cliente_id    = decoded.cliente_id;
+    if (!cliente_id) throw new Error('No cliente_id in state');
+  } catch (err) {
+    return res.status(400).send('Invalid state parameter');
+  }
+
+  try {
+    const backendUrl  = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+    const redirectUri = `${backendUrl}/calendly/callback`;
+
+    // Exchange code for tokens
+    console.log(`[Calendly OAuth] Exchanging code for tokens — negocio=${cliente_id}`);
+    const tokens   = await _calendlyOAuth.exchangeCode(code, redirectUri);
+    const expiresAt = new Date(Date.now() + (tokens.expires_in || 7200) * 1000).toISOString();
+
+    // Get user info
+    const user = await _calendlyOAuth.getCurrentUser(tokens.access_token);
+    const userUri = user.uri;
+    const orgUri  = user.current_organization;
+    console.log(`[Calendly OAuth] Connected user=${user.email} org=${orgUri} negocio=${cliente_id}`);
+
+    // Generate per-negocio webhook token for URL-based identification
+    const webhookToken = _calendlyOAuth.generateWebhookToken();
+    const webhookUrl   = `${backendUrl}/webhooks/calendly?t=${webhookToken}`;
+
+    // Delete existing webhook subscription if any (to avoid duplicates)
+    const { data: existing } = await supabase
+      .from('calendly_connections').select('webhook_uri, access_token').eq('negocio_id', cliente_id).maybeSingle();
+    if (existing?.webhook_uri) {
+      try {
+        await _calendlyOAuth.deleteWebhookSubscription(existing.access_token || tokens.access_token, existing.webhook_uri);
+        console.log(`[Calendly OAuth] Deleted old webhook ${existing.webhook_uri}`);
+      } catch (e) { console.warn('[Calendly OAuth] Could not delete old webhook:', e.message); }
+    }
+
+    // Create new webhook subscription
+    let webhookUri = null;
+    try {
+      const webhook = await _calendlyOAuth.createWebhookSubscription(tokens.access_token, orgUri, userUri, webhookUrl);
+      webhookUri    = webhook?.uri || null;
+      console.log(`[Calendly OAuth] Webhook created: ${webhookUri}`);
+    } catch (e) {
+      console.warn('[Calendly OAuth] Webhook creation warning:', e.message, '— connection will still be saved');
+    }
+
+    // Upsert connection in DB
+    const connRow = {
+      negocio_id:          cliente_id,
+      calendly_user_uri:   userUri,
+      calendly_org_uri:    orgUri,
+      calendly_user_name:  user.name  || null,
+      calendly_user_email: user.email || null,
+      access_token:        tokens.access_token,
+      refresh_token:       tokens.refresh_token || null,
+      token_expires_at:    expiresAt,
+      webhook_uri:         webhookUri,
+      webhook_token:       webhookToken,
+      connected_at:        new Date().toISOString(),
+    };
+
+    const { error: upsertErr } = await supabase
+      .from('calendly_connections')
+      .upsert(connRow, { onConflict: 'negocio_id' });
+
+    if (upsertErr) throw new Error(`DB upsert failed: ${upsertErr.message}`);
+
+    console.log(`[Calendly OAuth] Connection saved — negocio=${cliente_id} user=${user.email}`);
+    res.send(_calendlyPopupPage(true, cliente_id, null));
+
+  } catch (err) {
+    console.error('[Calendly OAuth] Callback error:', err.message);
+    res.send(_calendlyPopupPage(false, cliente_id, err.message));
+  }
+});
+
+// Helper: build the popup close page (sends postMessage to parent)
+function _calendlyPopupPage(success, cliente_id, errorMsg) {
+  const msg = success
+    ? `{type:'calendly_connected', cliente_id:${JSON.stringify(cliente_id)}}`
+    : `{type:'calendly_error', error:${JSON.stringify(errorMsg || 'Unknown error')}}`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>body{font-family:sans-serif;background:#0d0e12;color:#9ba0b4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}</style>
+</head><body>
+<div style="text-align:center">
+  <div style="font-size:32px;margin-bottom:12px">${success ? '✅' : '❌'}</div>
+  <div style="font-size:14px">${success ? 'Calendly conectado. Cerrando...' : 'Error: ' + (errorMsg || '')}</div>
+</div>
+<script>
+  try { window.opener && window.opener.postMessage(${msg}, '*'); } catch(e) {}
+  setTimeout(() => window.close(), 1500);
+</script>
+</body></html>`;
+}
+
+// GET /calendly/connection-status — connection info for the current negocio
+app.get('/calendly/connection-status', validateAccess, async (req, res) => {
+  const { data, error } = await supabase
+    .from('calendly_connections')
+    .select('negocio_id, calendly_user_name, calendly_user_email, calendly_user_uri, webhook_uri, connected_at')
+    .eq('negocio_id', req.cliente_id)
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || null);
+});
+
+// DELETE /calendly/disconnect — disconnect Calendly from the current negocio
+app.delete('/calendly/disconnect', validateAccess, async (req, res) => {
+  try {
+    const conn = await _getCalendlyToken(req.cliente_id);
+    if (!conn) return res.json({ ok: true, info: 'No connection found' });
+
+    // Delete webhook subscription on Calendly
+    if (conn.webhook_uri && conn.access_token) {
+      try {
+        await _calendlyOAuth.deleteWebhookSubscription(conn.access_token, conn.webhook_uri);
+        console.log(`[Calendly OAuth] Webhook deleted for negocio=${req.cliente_id}`);
+      } catch (e) { console.warn('[Calendly OAuth] Could not delete webhook on Calendly:', e.message); }
+    }
+
+    // Remove from DB
+    await supabase.from('calendly_connections').delete().eq('negocio_id', req.cliente_id);
+    console.log(`[Calendly OAuth] Disconnected negocio=${req.cliente_id}`);
+    res.json({ ok: true });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
