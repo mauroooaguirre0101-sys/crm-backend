@@ -3769,37 +3769,19 @@ ${reportCtx}${insightsCtx}`;
 async function _discordNotify(event, payload) {
   if (!process.env.DISCORD_BOT_TOKEN) return;
   try {
+    const { resolveTemplate, applyVars } = require('./discord.scheduler');
     const frontendUrl = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
 
-    if (event === 'report_submitted') {
+    if (event === 'report_submitted' || event === 'edit_approved' || event === 'edit_rejected') {
       const { alumno_id, cliente_id } = payload;
       if (!alumno_id) return;
       const { data: a } = await supabase.from('alumnos')
         .select('nombre, apellido, discord_channel_id').eq('id', alumno_id).maybeSingle();
       if (!a?.discord_channel_id) return;
       const nombre = [a.nombre, a.apellido].filter(Boolean).join(' ') || 'alumno';
-      const link   = frontendUrl ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}` : '';
-      await _discord.sendChannelMessage(a.discord_channel_id,
-        `📋 **Reporte enviado ✓** | Hola ${nombre}, tu reporte de esta semana quedó registrado. El equipo lo revisará pronto.\n${link}`);
-
-    } else if (event === 'edit_approved') {
-      const { alumno_id, cliente_id } = payload;
-      if (!alumno_id) return;
-      const { data: a } = await supabase.from('alumnos')
-        .select('nombre, apellido, discord_channel_id').eq('id', alumno_id).maybeSingle();
-      if (!a?.discord_channel_id) return;
-      const link = frontendUrl ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}` : '';
-      await _discord.sendChannelMessage(a.discord_channel_id,
-        `✅ **Edición aprobada** | Tenés 2 horas para actualizar tu reporte semanal.\n→ ${link}`);
-
-    } else if (event === 'edit_rejected') {
-      const { alumno_id } = payload;
-      if (!alumno_id) return;
-      const { data: a } = await supabase.from('alumnos')
-        .select('discord_channel_id').eq('id', alumno_id).maybeSingle();
-      if (!a?.discord_channel_id) return;
-      await _discord.sendChannelMessage(a.discord_channel_id,
-        `❌ **Edición rechazada** | Tu solicitud de edición no fue aprobada por el equipo.`);
+      const link   = frontendUrl && cliente_id ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}` : '';
+      const tpl    = await resolveTemplate(supabase, cliente_id, event);
+      await _discord.sendChannelMessage(a.discord_channel_id, applyVars(tpl, { nombre, link }));
 
     } else if (event === 'edit_requested') {
       const adminCh = process.env.DISCORD_ADMIN_CHANNEL_ID;
@@ -3813,35 +3795,66 @@ async function _discordNotify(event, payload) {
   }
 }
 
-// ── GET /discord/config — leer config Discord del cliente actual ──
+// ── GET /discord/config ──
 app.get('/discord/config', validateAccess, async (req, res) => {
   try {
-    const { data } = await supabase
-      .from('discord_config')
-      .select('*')
-      .eq('cliente_id', req.cliente_id)
-      .maybeSingle();
-    res.json(data || { cliente_id: req.cliente_id, enabled: false, guild_id: null, category_id: null, invite_link: null, admin_role_id: null });
+    const { data } = await supabase.from('discord_config').select('*').eq('cliente_id', req.cliente_id).maybeSingle();
+    res.json(data || { cliente_id: req.cliente_id, enabled: false, guild_id: null, category_id: null, invite_link: null, admin_role_id: null, schedule_days: '1,5', schedule_utc_hour: 12, schedule_utc_min: 0 });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── PUT /discord/config — guardar config Discord del cliente actual ──
+// ── PUT /discord/config ──
 app.put('/discord/config', validateAccess, async (req, res) => {
   try {
-    const { guild_id, category_id, invite_link, admin_role_id, enabled } = req.body;
+    const { guild_id, category_id, invite_link, admin_role_id, enabled, schedule_days, schedule_utc_hour, schedule_utc_min } = req.body;
     const email = req.headers['x-user-email'];
     const { error } = await supabase.from('discord_config').upsert({
-      cliente_id:    req.cliente_id,
-      guild_id:      guild_id      || null,
-      category_id:   category_id   || null,
-      invite_link:   invite_link   || null,
-      admin_role_id: admin_role_id || null,
-      enabled:       Boolean(enabled),
-      updated_at:    new Date().toISOString(),
-      updated_by:    email,
+      cliente_id:        req.cliente_id,
+      guild_id:          guild_id        || null,
+      category_id:       category_id     || null,
+      invite_link:       invite_link     || null,
+      admin_role_id:     admin_role_id   || null,
+      enabled:           Boolean(enabled),
+      schedule_days:     schedule_days   || '1,5',
+      schedule_utc_hour: parseInt(schedule_utc_hour) || 12,
+      schedule_utc_min:  parseInt(schedule_utc_min)  || 0,
+      updated_at:        new Date().toISOString(),
+      updated_by:        email,
     }, { onConflict: 'cliente_id' });
     if (error) return res.status(500).json({ error: error.message });
-    console.log(`[Discord config] cliente_id=${req.cliente_id} guild=${guild_id || '(none)'} enabled=${enabled}`);
+    console.log(`[Discord config] cliente_id=${req.cliente_id} guild=${guild_id || '(none)'} enabled=${enabled} schedule=${schedule_days} ${schedule_utc_hour}:${schedule_utc_min} UTC`);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── GET /discord/templates — leer templates del cliente actual ──
+app.get('/discord/templates', validateAccess, async (req, res) => {
+  try {
+    const { data } = await supabase.from('discord_templates').select('*').eq('cliente_id', req.cliente_id);
+    const { DEFAULT_TEMPLATES, EVENT_LABELS } = require('./discord.scheduler');
+    const rows = Object.keys(DEFAULT_TEMPLATES).map(event => {
+      const saved = (data || []).find(r => r.event === event);
+      return { event, label: EVENT_LABELS[event] || event, template: saved?.template ?? DEFAULT_TEMPLATES[event], enabled: saved?.enabled ?? true, is_custom: !!saved };
+    });
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── PUT /discord/templates — guardar uno o varios templates ──
+app.put('/discord/templates', validateAccess, async (req, res) => {
+  try {
+    const { templates } = req.body; // [{ event, template, enabled }]
+    if (!Array.isArray(templates) || !templates.length) return res.status(400).json({ error: 'templates[] requerido' });
+    const rows = templates.map(t => ({
+      cliente_id: req.cliente_id,
+      event:      t.event,
+      template:   t.template ?? '',
+      enabled:    t.enabled  ?? true,
+      updated_at: new Date().toISOString(),
+    }));
+    const { error } = await supabase.from('discord_templates').upsert(rows, { onConflict: 'cliente_id,event' });
+    if (error) return res.status(500).json({ error: error.message });
+    console.log(`[Discord templates] cliente_id=${req.cliente_id} — ${rows.length} template(s) guardado(s)`);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3967,20 +3980,14 @@ app.get('/auth/discord/callback', async (req, res) => {
     }
 
     // Send message — welcome for new channels, reconnect notice for existing ones
+    const { resolveTemplate, applyVars } = require('./discord.scheduler');
     const link = frontendUrl
       ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}`
       : '';
-    if (isNewChannel) {
-      await _discord.sendChannelMessage(channelId,
-        `👋 **Bienvenido/a, ${alumno.nombre || 'alumno'}!** Este es tu canal privado donde vamos a poder acompañarte en el programa.\n` +
-        `Acá vas a recibir recordatorios, novedades y feedback del equipo.\n` +
-        (link ? `📋 Tu link de reporte semanal: ${link}` : '')
-      );
-    } else {
-      await _discord.sendChannelMessage(channelId,
-        `🔄 **${alumno.nombre || 'Alumno'} reconectó su Discord.** ¡Bienvenido/a de nuevo!`
-      );
-    }
+    const nombre = alumno.nombre || 'alumno';
+    const msgEvent = isNewChannel ? 'welcome' : 'reconnect';
+    const tpl = await resolveTemplate(supabase, cliente_id, msgEvent);
+    await _discord.sendChannelMessage(channelId, applyVars(tpl, { nombre, link }));
 
     // Persist Discord info — capture error explicitly
     const updatePayload = {
