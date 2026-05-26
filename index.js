@@ -2414,6 +2414,12 @@ app.post('/form-response', async (req, res) => {
     const { data, error } = await supabase.from('form_responses').insert(row)
       .select('*').single();
     if (error) return res.status(500).json({ error: error.message });
+    // Save onboarding responses directly to the alumno record
+    if (tipo === 'onboarding' && alumno_id) {
+      await supabase.from('alumnos')
+        .update({ onboarding_responses: responses || {}, onboarding_completed_at: new Date().toISOString() })
+        .eq('id', alumno_id);
+    }
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3917,7 +3923,7 @@ app.get('/auth/discord/callback', async (req, res) => {
     // Load alumno from DB — log the exact query params for diagnosis
     console.log(`[Discord OAuth] loading alumno — id=${alumno_id} cliente_id=${cliente_id}`);
     const { data: alumno, error: alumnoErr } = await supabase.from('alumnos')
-      .select('id, nombre, apellido, cliente_id, discord_user_id, discord_channel_id')
+      .select('id, nombre, apellido, instagram, cliente_id, discord_user_id, discord_channel_id')
       .eq('id', alumno_id).eq('cliente_id', cliente_id).maybeSingle();
 
     if (alumnoErr) console.error('[Discord OAuth] alumno fetch error:', alumnoErr.message);
@@ -3981,10 +3987,18 @@ app.get('/auth/discord/callback', async (req, res) => {
 
     // Send message — welcome for new channels, reconnect notice for existing ones
     const { resolveTemplate, applyVars } = require('./discord.scheduler');
-    const link = frontendUrl
-      ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}`
-      : '';
     const nombre = alumno.nombre || 'alumno';
+    const ig     = alumno.instagram || '';
+    const base   = (frontendUrl || '').replace(/\/$/, '');
+    let link;
+    if (isNewChannel) {
+      // Welcome: send onboarding link so the student fills their profile first
+      link = base
+        ? `${base}/onboarding.html?cliente_id=${encodeURIComponent(cliente_id)}&tipo=onboarding&alumno_id=${encodeURIComponent(alumno_id)}&nombre=${encodeURIComponent(nombre)}${ig ? '&ig=' + encodeURIComponent(ig) : ''}`
+        : '';
+    } else {
+      link = base ? `${base}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}` : '';
+    }
     const msgEvent = isNewChannel ? 'welcome' : 'reconnect';
     const tpl = await resolveTemplate(supabase, cliente_id, msgEvent);
     await _discord.sendChannelMessage(channelId, applyVars(tpl, { nombre, link }));

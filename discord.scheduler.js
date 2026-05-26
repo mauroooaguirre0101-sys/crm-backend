@@ -4,7 +4,7 @@ const { sendChannelMessage } = require('./discord.service');
 // Default templates used when no custom template is configured in DB
 const DEFAULT_TEMPLATES = {
   weekly_report:    '📋 **Reporte Semanal**\n\n¡Hola {{nombre}}!\nYa podés completar tu reporte semanal.\n\n👉 {{link}}\n\nPor favor completalo antes del domingo a las 23:59 hs.',
-  welcome:          '👋 **Bienvenido/a, {{nombre}}!** Este es tu canal privado donde vamos a poder acompañarte en el programa.\nAcá vas a recibir recordatorios, novedades y feedback del equipo.\n📋 Tu link de reporte semanal: {{link}}',
+  welcome:          '👋 **Bienvenido/a, {{nombre}}!** Este es tu canal privado donde vamos a poder acompañarte en el programa.\nAcá vas a recibir recordatorios, novedades y feedback del equipo.\n📋 Antes de empezar, completá tu formulario de onboarding: {{link}}',
   reconnect:        '🔄 **{{nombre}} reconectó su Discord.** ¡Bienvenido/a de nuevo!',
   report_submitted: '📋 **Reporte enviado ✓** | Hola {{nombre}}, tu reporte de esta semana quedó registrado. El equipo lo revisará pronto.\n{{link}}',
   edit_approved:    '✅ **Edición aprobada** | Tenés 2 horas para actualizar tu reporte semanal.\n→ {{link}}',
