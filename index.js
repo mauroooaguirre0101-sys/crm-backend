@@ -567,6 +567,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       seguimientos,
       responde,
       link_llamada,
+      link_grabacion,
       reporte,
       info_previa,
       reporte_ghl,
@@ -575,6 +576,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
 
     motivo_no_cierre = motivo_no_cierre || '';
     link_llamada = link_llamada || '';
+    link_grabacion = link_grabacion || '';
     reporte = reporte || '';
     seguimientos = parseInt(seguimientos) || 0;
 
@@ -601,6 +603,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     if (seguimientos     !== undefined) patch.seguimientos       = seguimientos;
     if (responde         !== undefined) patch.responde           = responde;
     if (link_llamada     !== undefined) patch.link_llamada       = link_llamada;
+    if (link_grabacion   !== undefined) patch.link_grabacion     = link_grabacion;
     if (reporte          !== undefined) patch.reporte            = reporte;
     if (info_previa      !== undefined) patch.info_previa        = info_previa;
     if (reporte_ghl      !== undefined) patch.reporte_ghl        = reporte_ghl;
