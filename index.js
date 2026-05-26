@@ -8,7 +8,7 @@ const app = express();
 
 // ✅ Middlewares
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({ limit: '25mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // 🔑 Supabase (ws transport required for realtime on Node < 22)
 const supabase = createClient(
@@ -183,6 +183,7 @@ const _discord          = require('./discord.service');
 const _discordOAuth     = require('./discord.oauth');
 const { startScheduler: _startDiscordScheduler, triggerReminder: _triggerDiscordReminder, sendWeeklyReports: _sendWeeklyReports } = require('./discord.scheduler');
 const { startGateway: _startDiscordGateway } = require('./discord.gateway');
+const { verifySignature: _calendlyVerify, extractInvitee: _calendlyExtract } = require('./calendly.service');
 
 const AI_BASE_SYSTEM = `Eres un analista estratégico de ventas de alto ticket especializado en el mercado hispanohablante. Tu rol es analizar transcripts de llamadas de ventas y actuar como un consultor experto.
 
@@ -4187,6 +4188,219 @@ app.post('/discord/send-weekly-report', async (req, res) => {
     console.error('POST /discord/send-weekly-report:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ══════════════════════════════════════════
+// 🗓  CALENDLY INTEGRATION
+// ══════════════════════════════════════════
+
+// In-memory webhook log (last 50 events) for /calendly/debug
+const _calendlyWebhookLog = [];
+function _logCalendlyWebhook(entry) {
+  _calendlyWebhookLog.unshift({ ...entry, at: new Date().toISOString() });
+  if (_calendlyWebhookLog.length > 50) _calendlyWebhookLog.pop();
+}
+
+async function _calendlyCreateLead(inv, cliente_id) {
+  const now  = new Date().toISOString();
+  const notes = Object.entries(inv.formResponses).map(([q, a]) => `${q}: ${a}`).join('\n');
+
+  const fullRow = {
+    cliente_id,
+    nombre:                   inv.name || 'Sin nombre',
+    instagram:                '',
+    email:                    inv.email || null,
+    telefono:                 inv.telefono || null,
+    origen:                   'Inbound',
+    tipo:                     'Organico',
+    estado:                   'Agendado',
+    source:                   'calendly',
+    etiqueta:                 'Calendly',
+    etiquetas:                ['Calendly'],
+    notas:                    notes,
+    seguimientos:             0,
+    fecha_llamada:            inv.startTime || null,
+    meeting_link:             inv.meetingLink || null,
+    calendly_invitee_uri:     inv.uri || null,
+    calendly_form_responses:  Object.keys(inv.formResponses).length ? inv.formResponses : null,
+    created_at:               now,
+    updated_at:               now,
+    estado_updated_at:        now,
+  };
+
+  let { data, error } = await supabase.from('leads').insert(fullRow).select('id').single();
+
+  if (error) {
+    // Fallback: some new columns may not exist yet — insert with core fields only
+    console.warn('[Calendly] Full insert failed, trying core fallback:', error.message);
+    const coreRow = {
+      cliente_id,
+      nombre:    inv.name || 'Sin nombre',
+      instagram: '',
+      origen:    'Inbound',
+      tipo:      'Organico',
+      estado:    'Agendado',
+      source:    'calendly',
+      etiqueta:  'Calendly',
+      notas:     notes,
+      created_at: now,
+      updated_at: now,
+    };
+    ({ data, error } = await supabase.from('leads').insert(coreRow).select('id').single());
+    if (error) throw new Error(`INSERT lead failed: ${error.message}`);
+  }
+
+  console.log(`[Calendly Lead Created] id=${data.id} cliente=${cliente_id} name="${inv.name}" email=${inv.email}`);
+  return data.id;
+}
+
+// POST /webhooks/calendly — receives Calendly webhook events
+app.post('/webhooks/calendly', async (req, res) => {
+  try {
+    // Signature verification using raw body
+    const sigHeader  = req.headers['calendly-webhook-signature'];
+    const signingKey = process.env.CALENDLY_WEBHOOK_SIGNING_KEY;
+    const rawBody    = req.rawBody ? req.rawBody.toString() : JSON.stringify(req.body);
+
+    if (signingKey && !_calendlyVerify(rawBody, sigHeader, signingKey)) {
+      console.warn('[Calendly Webhook] Invalid signature — rejected');
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    const { event: eventType, payload } = req.body;
+    if (!eventType || !payload) return res.status(400).json({ error: 'Missing event or payload' });
+
+    console.log(`[Calendly Webhook] event=${eventType}`);
+
+    const inv          = _calendlyExtract(payload);
+    const eventTypeUri = inv.eventTypeUri;
+
+    // Resolve cliente_id from event_type mapping
+    let cliente_id = null;
+    if (eventTypeUri) {
+      const { data: mapping } = await supabase
+        .from('calendly_event_mappings')
+        .select('cliente_id')
+        .eq('calendly_event_uri', eventTypeUri)
+        .maybeSingle();
+      if (mapping) {
+        cliente_id = mapping.cliente_id;
+        console.log(`[Calendly Event Mapped] event_uri=${eventTypeUri} → cliente_id=${cliente_id}`);
+      }
+    }
+
+    if (!cliente_id) {
+      console.warn(`[Calendly Webhook] No mapping found for event_uri=${eventTypeUri} — logged but ignored`);
+      _logCalendlyWebhook({ eventType, eventTypeUri, inviteeUri: inv.uri, cliente_id: null, status: 'no_mapping' });
+      return res.json({ ok: true, warning: 'No mapping found for this event type' });
+    }
+
+    _logCalendlyWebhook({ eventType, eventTypeUri, inviteeUri: inv.uri, cliente_id, status: 'processing' });
+
+    if (eventType === 'invitee.created') {
+      // Deduplication: skip if invitee URI already exists
+      if (inv.uri) {
+        const { data: dup } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('cliente_id', cliente_id)
+          .eq('calendly_invitee_uri', inv.uri)
+          .maybeSingle();
+        if (dup) {
+          console.log(`[Calendly Webhook] Duplicate invitee ${inv.uri} — skipped`);
+          return res.json({ ok: true, info: 'duplicate' });
+        }
+      }
+      await _calendlyCreateLead(inv, cliente_id);
+
+    } else if (eventType === 'invitee.canceled') {
+      const now = new Date().toISOString();
+      const { error } = await supabase.from('leads')
+        .update({ estado: 'Perdido', ultima_accion: 'Canceló llamada Calendly', updated_at: now })
+        .eq('cliente_id', cliente_id)
+        .eq('calendly_invitee_uri', inv.uri);
+      if (error) console.warn('[Calendly Webhook] cancel update warn:', error.message);
+      else console.log(`[Calendly Webhook] invitee.canceled — lead updated to Perdido uri=${inv.uri}`);
+
+    } else if (eventType === 'invitee.rescheduled') {
+      const now = new Date().toISOString();
+      if (inv.oldInviteeUri) {
+        const { error } = await supabase.from('leads')
+          .update({
+            calendly_invitee_uri: inv.uri,
+            fecha_llamada:        inv.startTime,
+            meeting_link:         inv.meetingLink,
+            estado:               'Agendado',
+            ultima_accion:        'Reagendó llamada Calendly',
+            updated_at:           now,
+          })
+          .eq('cliente_id', cliente_id)
+          .eq('calendly_invitee_uri', inv.oldInviteeUri);
+        if (error) console.warn('[Calendly Webhook] reschedule update warn:', error.message);
+        else console.log(`[Calendly Webhook] invitee.rescheduled — lead updated old=${inv.oldInviteeUri}`);
+      } else {
+        // No old URI reference — create new lead
+        await _calendlyCreateLead(inv, cliente_id);
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[Calendly Webhook] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /calendly/debug — show mappings, recent webhooks, recent leads
+app.get('/calendly/debug', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+  try {
+    const [mappingsRes, leadsRes] = await Promise.all([
+      supabase.from('calendly_event_mappings').select('*').order('created_at', { ascending: false }),
+      supabase.from('leads').select('id,nombre,email,estado,source,created_at,cliente_id,calendly_invitee_uri')
+        .eq('source', 'calendly').order('created_at', { ascending: false }).limit(20),
+    ]);
+    res.json({
+      mappings:        mappingsRes.data  || [],
+      recent_webhooks: _calendlyWebhookLog,
+      recent_leads:    leadsRes.data     || [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /calendly/mappings — list all mappings (holding access)
+app.get('/calendly/mappings', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+  const { data, error } = await supabase.from('calendly_event_mappings').select('*').order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+// POST /calendly/mappings — add a mapping
+app.post('/calendly/mappings', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+  const { cliente_id, calendly_event_uri, label } = req.body;
+  if (!cliente_id || !calendly_event_uri) return res.status(400).json({ error: 'Faltan cliente_id y calendly_event_uri' });
+  const { data, error } = await supabase.from('calendly_event_mappings')
+    .insert({ cliente_id, calendly_event_uri: calendly_event_uri.trim(), label: label || null })
+    .select('*').single();
+  if (error) return res.status(500).json({ error: error.message });
+  console.log(`[Calendly] Mapping added: ${calendly_event_uri} → ${cliente_id}`);
+  res.json(data);
+});
+
+// DELETE /calendly/mappings/:id — remove a mapping
+app.delete('/calendly/mappings/:id', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+  const { error } = await supabase.from('calendly_event_mappings').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
 });
 
 // 🚀 SERVER
