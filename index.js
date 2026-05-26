@@ -2238,13 +2238,14 @@ app.get('/holding/users', async (req, res) => {
 // ===============================
 // 📋 TAREAS HOLDING
 // ===============================
+// Tareas holding — usan negocio_tasks como fuente de verdad (sincronizado con CRM individual)
 app.get('/holding/tareas', async (req, res) => {
   try {
     const email = req.headers['x-user-email'];
     if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
     const negocio_id = req.query.negocio_id;
-    let q = supabase.from('tareas_holding').select('*').order('orden', { ascending: true });
-    if (negocio_id) q = q.eq('negocio_id', negocio_id);
+    let q = supabase.from('negocio_tasks').select('*').order('created_at', { ascending: true });
+    if (negocio_id) q = q.eq('cliente_id', negocio_id);
     const { data, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
     res.json(data || []);
@@ -2254,7 +2255,11 @@ app.post('/holding/tareas', async (req, res) => {
   try {
     const email = req.headers['x-user-email'];
     if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
-    const { data, error } = await supabase.from('tareas_holding').insert({ ...req.body, created_by: email }).select('*').single();
+    const { negocio_id, titulo, columna, area, prioridad, responsable, fecha_limite, descripcion, recursos } = req.body;
+    const { data, error } = await supabase.from('negocio_tasks').insert({
+      cliente_id: negocio_id, titulo, columna: columna || 'por_hacer',
+      area, prioridad, responsable, fecha_limite, descripcion, recursos,
+    }).select('*').single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2263,7 +2268,10 @@ app.patch('/holding/tareas/:id', async (req, res) => {
   try {
     const email = req.headers['x-user-email'];
     if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
-    const { data, error } = await supabase.from('tareas_holding').update(req.body).eq('id', req.params.id).select('*').single();
+    const allowed = ['titulo','descripcion','columna','area','prioridad','responsable','fecha_limite','recursos'];
+    const updates = {};
+    allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+    const { data, error } = await supabase.from('negocio_tasks').update(updates).eq('id', req.params.id).select('*').single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2272,9 +2280,36 @@ app.delete('/holding/tareas/:id', async (req, res) => {
   try {
     const email = req.headers['x-user-email'];
     if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
-    const { error } = await supabase.from('tareas_holding').delete().eq('id', req.params.id);
+    const { error } = await supabase.from('negocio_tasks').delete().eq('id', req.params.id);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Resumen de tareas por usuario — para perfil en holding dashboard
+app.get('/holding/tasks-summary', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { data: tasks, error } = await supabase
+      .from('negocio_tasks')
+      .select('cliente_id, responsable, columna, titulo');
+    if (error) return res.status(500).json({ error: error.message });
+    const summary = {};
+    for (const t of (tasks || [])) {
+      let resps = [];
+      try { resps = t.responsable ? JSON.parse(t.responsable) : []; } catch {}
+      const activa = t.columna !== 'terminado';
+      for (const r of resps) {
+        if (!summary[r]) summary[r] = { email: r, total: 0, activas: 0, por_negocio: {} };
+        summary[r].total++;
+        if (activa) summary[r].activas++;
+        if (!summary[r].por_negocio[t.cliente_id]) summary[r].por_negocio[t.cliente_id] = { total: 0, activas: 0 };
+        summary[r].por_negocio[t.cliente_id].total++;
+        if (activa) summary[r].por_negocio[t.cliente_id].activas++;
+      }
+    }
+    res.json(Object.values(summary));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
