@@ -3813,6 +3813,39 @@ async function _discordNotify(event, payload) {
   }
 }
 
+// ── GET /discord/config — leer config Discord del cliente actual ──
+app.get('/discord/config', validateAccess, async (req, res) => {
+  try {
+    const { data } = await supabase
+      .from('discord_config')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .maybeSingle();
+    res.json(data || { cliente_id: req.cliente_id, enabled: false, guild_id: null, category_id: null, invite_link: null, admin_role_id: null });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── PUT /discord/config — guardar config Discord del cliente actual ──
+app.put('/discord/config', validateAccess, async (req, res) => {
+  try {
+    const { guild_id, category_id, invite_link, admin_role_id, enabled } = req.body;
+    const email = req.headers['x-user-email'];
+    const { error } = await supabase.from('discord_config').upsert({
+      cliente_id:    req.cliente_id,
+      guild_id:      guild_id      || null,
+      category_id:   category_id   || null,
+      invite_link:   invite_link   || null,
+      admin_role_id: admin_role_id || null,
+      enabled:       Boolean(enabled),
+      updated_at:    new Date().toISOString(),
+      updated_by:    email,
+    }, { onConflict: 'cliente_id' });
+    if (error) return res.status(500).json({ error: error.message });
+    console.log(`[Discord config] cliente_id=${req.cliente_id} guild=${guild_id || '(none)'} enabled=${enabled}`);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Step 1: Validate identity then redirect to Discord consent screen ──
 // GET /auth/discord/login?alumno_id=X&cliente_id=Y
 app.get('/auth/discord/login', async (req, res) => {
@@ -3884,9 +3917,31 @@ app.get('/auth/discord/callback', async (req, res) => {
       return res.redirect(`${frontendUrl}/formulario_semanal.html?discord=error&reason=alumno_not_found&cliente_id=${cliente_id}&alumno_id=${alumno_id}`);
     }
 
-    // Add user to the Evoluciona guild
-    await _discord.addGuildMember(dUser.id, tokens.access_token);
-    console.log(`[Discord OAuth] guild join OK`);
+    // Load per-client Discord config
+    const { data: discordCfg } = await supabase
+      .from('discord_config')
+      .select('*')
+      .eq('cliente_id', cliente_id)
+      .maybeSingle();
+
+    console.log(`[Discord OAuth] cliente_id=${cliente_id} discord_enabled=${discordCfg?.enabled} guild_id=${discordCfg?.guild_id || '(env fallback)'}`);
+
+    if (discordCfg && discordCfg.enabled === false) {
+      console.warn(`[Discord OAuth] Discord deshabilitado para cliente_id=${cliente_id}`);
+      return res.redirect(`${frontendUrl}/formulario_semanal.html?discord=error&reason=discord_disabled&cliente_id=${cliente_id}&alumno_id=${alumno_id}`);
+    }
+
+    // cfg object passed to all service calls — merges DB config with env var fallback
+    const guildCfg = { ...( discordCfg || {}), cliente_id };
+
+    if (!guildCfg.guild_id && !process.env.DISCORD_GUILD_ID) {
+      console.error(`[Discord OAuth] Sin guild_id configurado para cliente_id=${cliente_id}`);
+      return res.redirect(`${frontendUrl}/formulario_semanal.html?discord=error&reason=no_guild_configured&cliente_id=${cliente_id}&alumno_id=${alumno_id}`);
+    }
+
+    // Add user to the correct guild
+    await _discord.addGuildMember(dUser.id, tokens.access_token, guildCfg);
+    console.log(`[Discord OAuth] guild join OK — guild=${guildCfg.guild_id || process.env.DISCORD_GUILD_ID}`);
 
     // Create private channel if not already done
     let channelId = alumno.discord_channel_id;
@@ -3894,15 +3949,15 @@ app.get('/auth/discord/callback', async (req, res) => {
 
     if (!channelId) {
       // Fallback: search by user's Discord ID in permission overwrites before creating
-      const existing = await _discord.findChannelByUser(dUser.id);
+      const existing = await _discord.findChannelByUser(dUser.id, guildCfg);
       if (existing) {
         channelId = existing.id;
         console.log(`[Discord OAuth] found existing channel by user overwrite: ${channelId}`);
       } else {
         const nombre   = (alumno.nombre || 'alumno').toLowerCase();
         const chanName = `cliente-${nombre}`;
-        console.log(`[Discord OAuth] creating channel: ${chanName}`);
-        const chan = await _discord.createPrivateChannel(chanName, dUser.id);
+        console.log(`[Discord OAuth] creating channel: ${chanName} — guild=${guildCfg.guild_id || process.env.DISCORD_GUILD_ID} category=${guildCfg.category_id || process.env.DISCORD_CATEGORY_ID || '(none)'}`);
+        const chan = await _discord.createPrivateChannel(chanName, dUser.id, guildCfg);
         channelId    = chan.id;
         isNewChannel = true;
         console.log(`[Discord OAuth] channel created: ${channelId}`);

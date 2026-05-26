@@ -5,14 +5,13 @@ const DISCORD_API = 'https://discord.com/api/v10';
 const STUDENT_ALLOW = '68608';
 const VIEW_DENY     = '1024';
 
-// Discord error code reference for permission debugging
 const DISCORD_ERRORS = {
-  '10003': 'Unknown Channel — DISCORD_CATEGORY_ID may be invalid or deleted',
-  '10004': 'Unknown Guild — DISCORD_GUILD_ID is wrong',
-  '50001': 'Missing Access — bot cannot access this guild or channel',
-  '50013': 'Missing Permissions — bot needs Manage Channels (and Manage Roles for overwrites)',
-  '50035': 'Invalid Form Body — channel name contains invalid characters or is too long',
-  '30013': 'Maximum Channels reached — guild has hit the 500 channel limit',
+  '10003': 'Unknown Channel — category_id o channel_id inválido o eliminado',
+  '10004': 'Unknown Guild — guild_id incorrecto',
+  '50001': 'Missing Access — el bot no tiene acceso al servidor o canal',
+  '50013': 'Missing Permissions — el bot necesita Manage Channels y Manage Roles',
+  '50035': 'Invalid Form Body — nombre de canal con caracteres inválidos o muy largo',
+  '30013': 'Maximum Channels — el servidor alcanzó el límite de 500 canales',
 };
 
 function _parseDiscordError(errMsg) {
@@ -39,14 +38,27 @@ async function _req(method, path, body = null) {
   return data;
 }
 
-// Add user to the main guild using their OAuth access_token (requires guilds.join scope)
-async function addGuildMember(discordUserId, accessToken) {
-  console.log(`[Discord] addGuildMember — user ${discordUserId} → guild ${process.env.DISCORD_GUILD_ID}`);
+// Resolve guild config — per-client row takes priority, env vars are fallback
+function _resolveGuild(cfg = {}) {
+  return {
+    guildId:    cfg.guild_id    || process.env.DISCORD_GUILD_ID    || null,
+    categoryId: cfg.category_id || process.env.DISCORD_CATEGORY_ID || null,
+    adminRole:  cfg.admin_role_id || process.env.DISCORD_ADMIN_ROLE_ID || null,
+  };
+}
+
+// Add user to a guild using their OAuth access_token (requires guilds.join scope)
+async function addGuildMember(discordUserId, accessToken, cfg = {}) {
+  const { guildId } = _resolveGuild(cfg);
+  if (!guildId) {
+    console.warn('[Discord] addGuildMember — no guild_id configured, skipping');
+    return;
+  }
+  console.log(`[Discord] addGuildMember — user=${discordUserId} guild=${guildId}`);
   try {
-    const result = await _req('PUT', `/guilds/${process.env.DISCORD_GUILD_ID}/members/${discordUserId}`, {
+    const result = await _req('PUT', `/guilds/${guildId}/members/${discordUserId}`, {
       access_token: accessToken,
     });
-    // null = 204 = already a member
     console.log(`[Discord] addGuildMember — ${result === null ? 'already a member' : 'joined successfully'}`);
   } catch (err) {
     const hint = _parseDiscordError(err.message);
@@ -54,32 +66,27 @@ async function addGuildMember(discordUserId, accessToken) {
   }
 }
 
-// Create a private text channel visible only to the student + admins
-async function createPrivateChannel(rawName, discordUserId) {
-  const guildId = process.env.DISCORD_GUILD_ID;
+// Create a private text channel visible only to the student + admin role
+async function createPrivateChannel(rawName, discordUserId, cfg = {}) {
+  const { guildId, categoryId, adminRole } = _resolveGuild(cfg);
+  if (!guildId) throw new Error('No guild_id configurado para este cliente');
+
   const name = rawName.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
     .replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 100);
 
-  console.log(`[Discord] createPrivateChannel — name="${name}" user=${discordUserId} guild=${guildId}`);
-  console.log(`[Discord] Env check — CATEGORY_ID=${process.env.DISCORD_CATEGORY_ID || '(none)'} ADMIN_ROLE_ID=${process.env.DISCORD_ADMIN_ROLE_ID || '(none)'}`);
+  console.log(`[Discord] createPrivateChannel — cliente_id=${cfg.cliente_id || '?'} guild=${guildId} category=${categoryId || '(none)'} name="${name}" user=${discordUserId}`);
 
   const overwrites = [
-    { id: guildId,       type: 0, deny:  VIEW_DENY     }, // deny @everyone VIEW_CHANNEL
-    { id: discordUserId, type: 1, allow: STUDENT_ALLOW }, // allow student: view+send+history
+    { id: guildId,       type: 0, deny:  VIEW_DENY     }, // @everyone: sin acceso
+    { id: discordUserId, type: 1, allow: STUDENT_ALLOW }, // alumno: ver + escribir + historial
   ];
-
-  if (process.env.DISCORD_ADMIN_ROLE_ID) {
-    overwrites.push({ id: process.env.DISCORD_ADMIN_ROLE_ID, type: 0, allow: STUDENT_ALLOW });
-    console.log(`[Discord] Admin role overwrite added: ${process.env.DISCORD_ADMIN_ROLE_ID}`);
+  if (adminRole) {
+    overwrites.push({ id: adminRole, type: 0, allow: STUDENT_ALLOW });
+    console.log(`[Discord] Admin role overwrite: ${adminRole}`);
   }
-
-  console.log(`[Discord] Permission overwrites: ${JSON.stringify(overwrites)}`);
 
   const body = { name, type: 0, permission_overwrites: overwrites };
-  if (process.env.DISCORD_CATEGORY_ID) {
-    body.parent_id = process.env.DISCORD_CATEGORY_ID;
-    console.log(`[Discord] Placing channel under category: ${process.env.DISCORD_CATEGORY_ID}`);
-  }
+  if (categoryId) body.parent_id = categoryId;
 
   try {
     const channel = await _req('POST', `/guilds/${guildId}/channels`, body);
@@ -87,9 +94,8 @@ async function createPrivateChannel(rawName, discordUserId) {
     return channel;
   } catch (err) {
     const hint = _parseDiscordError(err.message);
-    console.error(`[Discord] createPrivateChannel FAILED: ${err.message}`);
+    console.error(`[Discord] createPrivateChannel FAILED — guild=${guildId} category=${categoryId || '(none)'}: ${err.message}`);
     if (hint) console.error(`[Discord] Hint: ${hint}`);
-    console.error(`[Discord] Debug — guild=${guildId} category=${process.env.DISCORD_CATEGORY_ID || '(none)'} adminRole=${process.env.DISCORD_ADMIN_ROLE_ID || '(none)'}`);
     throw err;
   }
 }
@@ -107,16 +113,20 @@ async function sendEmbed(channelId, embed) {
 }
 
 // Fetch guild member info (returns null if user not in guild)
-async function getGuildMember(discordUserId) {
+async function getGuildMember(discordUserId, cfg = {}) {
+  const { guildId } = _resolveGuild(cfg);
+  if (!guildId) return null;
   try {
-    return await _req('GET', `/guilds/${process.env.DISCORD_GUILD_ID}/members/${discordUserId}`);
+    return await _req('GET', `/guilds/${guildId}/members/${discordUserId}`);
   } catch { return null; }
 }
 
-// Find an existing channel where discordUserId has an explicit overwrite (user's private channel)
-async function findChannelByUser(discordUserId) {
+// Find an existing channel where discordUserId has an explicit overwrite (anti-duplicate)
+async function findChannelByUser(discordUserId, cfg = {}) {
+  const { guildId } = _resolveGuild(cfg);
+  if (!guildId) return null;
   try {
-    const channels = await _req('GET', `/guilds/${process.env.DISCORD_GUILD_ID}/channels`);
+    const channels = await _req('GET', `/guilds/${guildId}/channels`);
     if (!Array.isArray(channels)) return null;
     return channels.find(c =>
       c.type === 0 &&
@@ -126,4 +136,11 @@ async function findChannelByUser(discordUserId) {
   } catch { return null; }
 }
 
-module.exports = { addGuildMember, createPrivateChannel, sendChannelMessage, sendEmbed, getGuildMember, findChannelByUser };
+module.exports = {
+  addGuildMember,
+  createPrivateChannel,
+  sendChannelMessage,
+  sendEmbed,
+  getGuildMember,
+  findChannelByUser,
+};
