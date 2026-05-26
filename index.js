@@ -308,7 +308,7 @@ app.get('/leads', validateAccess, async (req, res) => {
     if (search && search.trim()) q = q.or(`nombre.ilike.%${search.trim()}%,instagram.ilike.%${search.trim()}%`);
     if (etiqueta_filter && etiqueta_filter.trim()) {
       const ef = etiqueta_filter.trim();
-      q = q.or(`etiqueta.eq.${ef},etiquetas.cs.{"${ef}"}`);
+      q = q.or(`etiqueta.eq.${ef},etiquetas.cs.["${ef}"]`);
     }
     if (vista === 'perdidos')  q = q.or('estado.eq.Perdido,and(seguimientos.gte.4,respondio_seguimiento_4.eq.NO)');
     if (vista === 'activos')   q = q.neq('estado', 'Perdido');
