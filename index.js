@@ -4371,52 +4371,62 @@ app.post('/webhooks/calendly', async (req, res) => {
 
     _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'processing', name: inv.name, email: inv.email });
 
-    // ── invitee.created: create a new call ──
+    // ── invitee.created ──
+    // Calendly also fires this for reschedules (with payload.old_invitee set).
+    // When old_invitee is present → update the existing call instead of creating a duplicate.
     if (eventType === 'invitee.created') {
-      // Deduplication: skip if this exact invitee URI was already processed
-      if (inv.uri) {
-        const { data: dup } = await supabase.from('calls').select('id')
-          .eq('cliente_id', cliente_id).eq('calendly_invitee_uri', inv.uri).maybeSingle();
-        if (dup) {
-          console.log(`[Calendly Webhook] ⚠ Duplicate invitee_uri=${inv.uri} — skipped (call.id=${dup.id})`);
-          return res.json({ ok: true, info: 'duplicate', call_id: dup.id });
-        }
-      }
-      const callId = await _calendlyCreateCall(inv, cliente_id);
-      _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'created', callId, name: inv.name, email: inv.email });
+      const oldInviteeUri = inv.oldInviteeUri;
 
-    // ── invitee.canceled: mark call as "No asistió" ──
-    } else if (eventType === 'invitee.canceled') {
-      console.log(`[Calendly Webhook] Processing cancellation uri=${inv.uri}`);
-      const { data: updated, error } = await supabase.from('calls')
-        .update({ estado: 'No asistió' })
-        .eq('cliente_id', cliente_id)
-        .eq('calendly_invitee_uri', inv.uri)
-        .select('id');
-      if (error) console.warn('[Calendly Webhook] ⚠ Cancel update error:', error.message);
-      else console.log(`[Calendly Webhook] ✓ invitee.canceled → "No asistió" rows=${updated?.length || 0} uri=${inv.uri}`);
-
-    // ── invitee.rescheduled: update fecha_llamada and link ──
-    } else if (eventType === 'invitee.rescheduled') {
-      console.log(`[Calendly Webhook] Processing reschedule old=${inv.oldInviteeUri} new=${inv.uri}`);
-      if (inv.oldInviteeUri) {
+      if (oldInviteeUri) {
+        // Reschedule: update the original call with new date/link/uri
+        console.log(`[Calendly Webhook] Reschedule detected — updating old call old=${oldInviteeUri} new=${inv.uri}`);
         const { data: updated, error } = await supabase.from('calls')
           .update({
             calendly_invitee_uri: inv.uri,
-            fecha_llamada:        inv.startTime   || null,
-            link_llamada:         inv.meetingLink  || null,
+            fecha_llamada:        inv.startTime  || null,
+            link_llamada:         inv.meetingLink || null,
             estado:               'Pendiente',
           })
           .eq('cliente_id', cliente_id)
-          .eq('calendly_invitee_uri', inv.oldInviteeUri)
+          .eq('calendly_invitee_uri', oldInviteeUri)
           .select('id');
         if (error) console.warn('[Calendly Webhook] ⚠ Reschedule update error:', error.message);
-        else console.log(`[Calendly Webhook] ✓ invitee.rescheduled rows=${updated?.length || 0} nueva_fecha=${inv.startTime}`);
+        else console.log(`[Calendly Webhook] ✓ Rescheduled rows=${updated?.length || 0} nueva_fecha=${inv.startTime}`);
+        _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'rescheduled', name: inv.name, email: inv.email });
       } else {
-        // No old URI — create as new call
-        console.log('[Calendly Webhook] Reschedule without old_invitee URI — creating new call');
-        await _calendlyCreateCall(inv, cliente_id);
+        // New booking — dedup check first
+        if (inv.uri) {
+          const { data: dup } = await supabase.from('calls').select('id')
+            .eq('cliente_id', cliente_id).eq('calendly_invitee_uri', inv.uri).maybeSingle();
+          if (dup) {
+            console.log(`[Calendly Webhook] ⚠ Duplicate invitee_uri=${inv.uri} — skipped (call.id=${dup.id})`);
+            return res.json({ ok: true, info: 'duplicate', call_id: dup.id });
+          }
+        }
+        const callId = await _calendlyCreateCall(inv, cliente_id);
+        _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'created', callId, name: inv.name, email: inv.email });
       }
+
+    // ── invitee.canceled ──
+    // When it's a reschedule Calendly also fires canceled (with payload.new_invitee set).
+    // In that case skip marking as 'No asistió' — the invitee.created handler will update the row.
+    } else if (eventType === 'invitee.canceled') {
+      const isReschedule = !!(payload.new_invitee);
+      console.log(`[Calendly Webhook] Processing cancellation uri=${inv.uri} isReschedule=${isReschedule}`);
+      if (isReschedule) {
+        console.log('[Calendly Webhook] Skipping "No asistió" — this canceled event is part of a reschedule');
+        _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'reschedule_cancel_skipped', name: inv.name, email: inv.email });
+      } else {
+        const { data: updated, error } = await supabase.from('calls')
+          .update({ estado: 'No asistió' })
+          .eq('cliente_id', cliente_id)
+          .eq('calendly_invitee_uri', inv.uri)
+          .select('id');
+        if (error) console.warn('[Calendly Webhook] ⚠ Cancel update error:', error.message);
+        else console.log(`[Calendly Webhook] ✓ invitee.canceled → "No asistió" rows=${updated?.length || 0} uri=${inv.uri}`);
+        _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'canceled', name: inv.name, email: inv.email });
+      }
+
     } else {
       console.log(`[Calendly Webhook] Unhandled event type: ${eventType}`);
     }

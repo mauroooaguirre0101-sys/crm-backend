@@ -67,7 +67,7 @@ async function getCurrentUser(accessToken) {
 async function createWebhookSubscription(accessToken, orgUri, userUri, callbackUrl) {
   const data = await _apiCall('POST', '/webhook_subscriptions', {
     url:          callbackUrl,
-    events:       ['invitee.created', 'invitee.canceled', 'invitee.rescheduled'],
+    events:       ['invitee.created', 'invitee.canceled'],
     organization: orgUri,
     user:         userUri,
     scope:        'user',
