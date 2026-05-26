@@ -113,4 +113,17 @@ async function getGuildMember(discordUserId) {
   } catch { return null; }
 }
 
-module.exports = { addGuildMember, createPrivateChannel, sendChannelMessage, sendEmbed, getGuildMember };
+// Find an existing channel where discordUserId has an explicit overwrite (user's private channel)
+async function findChannelByUser(discordUserId) {
+  try {
+    const channels = await _req('GET', `/guilds/${process.env.DISCORD_GUILD_ID}/channels`);
+    if (!Array.isArray(channels)) return null;
+    return channels.find(c =>
+      c.type === 0 &&
+      Array.isArray(c.permission_overwrites) &&
+      c.permission_overwrites.some(o => o.id === discordUserId && o.type === 1)
+    ) || null;
+  } catch { return null; }
+}
+
+module.exports = { addGuildMember, createPrivateChannel, sendChannelMessage, sendEmbed, getGuildMember, findChannelByUser };

@@ -3890,24 +3890,41 @@ app.get('/auth/discord/callback', async (req, res) => {
 
     // Create private channel if not already done
     let channelId = alumno.discord_channel_id;
-    if (!channelId) {
-      const nombre   = (alumno.nombre || 'alumno').toLowerCase();
-      const chanName = `cliente-${nombre}`;
-      console.log(`[Discord OAuth] creating channel: ${chanName}`);
-      const chan = await _discord.createPrivateChannel(chanName, dUser.id);
-      channelId  = chan.id;
-      console.log(`[Discord OAuth] channel created: ${channelId}`);
+    let isNewChannel = false;
 
-      const link = frontendUrl
-        ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}`
-        : '';
+    if (!channelId) {
+      // Fallback: search by user's Discord ID in permission overwrites before creating
+      const existing = await _discord.findChannelByUser(dUser.id);
+      if (existing) {
+        channelId = existing.id;
+        console.log(`[Discord OAuth] found existing channel by user overwrite: ${channelId}`);
+      } else {
+        const nombre   = (alumno.nombre || 'alumno').toLowerCase();
+        const chanName = `cliente-${nombre}`;
+        console.log(`[Discord OAuth] creating channel: ${chanName}`);
+        const chan = await _discord.createPrivateChannel(chanName, dUser.id);
+        channelId    = chan.id;
+        isNewChannel = true;
+        console.log(`[Discord OAuth] channel created: ${channelId}`);
+      }
+    } else {
+      console.log(`[Discord OAuth] channel already exists in DB: ${channelId}`);
+    }
+
+    // Send message — welcome for new channels, reconnect notice for existing ones
+    const link = frontendUrl
+      ? `${frontendUrl}/formulario_semanal.html?cliente_id=${cliente_id}&alumno_id=${alumno_id}`
+      : '';
+    if (isNewChannel) {
       await _discord.sendChannelMessage(channelId,
         `👋 **Bienvenido/a, ${alumno.nombre || 'alumno'}!** Este es tu canal privado donde vamos a poder acompañarte en el programa.\n` +
         `Acá vas a recibir recordatorios, novedades y feedback del equipo.\n` +
         (link ? `📋 Tu link de reporte semanal: ${link}` : '')
       );
     } else {
-      console.log(`[Discord OAuth] channel already exists: ${channelId}`);
+      await _discord.sendChannelMessage(channelId,
+        `🔄 **${alumno.nombre || 'Alumno'} reconectó su Discord.** ¡Bienvenido/a de nuevo!`
+      );
     }
 
     // Persist Discord info — capture error explicitly
