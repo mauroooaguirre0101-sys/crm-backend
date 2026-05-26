@@ -50,8 +50,9 @@ function extractInvitee(payload) {
     ? inv.old_invitee
     : (inv.old_invitee?.uri || null);
 
-  // Phone detection + form responses
-  let telefono = '';
+  // Parse form responses — extract phone and instagram handle
+  let telefono  = '';
+  let instagram = '';
   const formResponses = {};
   const qas = inv.questions_and_answers || payload.questions_and_answers || [];
   for (const qa of qas) {
@@ -64,9 +65,12 @@ function extractInvitee(payload) {
       ql.includes('phone') || ql.includes('teléfono') || ql.includes('telefono') ||
       ql.includes('celular') || ql.includes('whatsapp') || ql.includes('movil') || ql.includes('móvil')
     )) telefono = a;
+    if (!instagram && (ql.includes('instagram') || ql === 'ig' || ql.startsWith('ig '))) {
+      instagram = a.replace(/^@/, '').replace(/\s+/g, '').toLowerCase();
+    }
   }
 
-  return { name, email, telefono, uri, eventTypeUri, startTime, meetingLink, formResponses, oldInviteeUri };
+  return { name, email, telefono, instagram, uri, eventTypeUri, startTime, meetingLink, formResponses, oldInviteeUri };
 }
 
 module.exports = { verifySignature, extractInvitee };
