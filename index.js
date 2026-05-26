@@ -4384,6 +4384,7 @@ app.post('/webhooks/calendly', async (req, res) => {
             fecha_llamada:        inv.startTime  || null,
             link_llamada:         inv.meetingLink || null,
             estado:               'Pendiente',
+            reagendada:           true,
           })
           .eq('cliente_id', cliente_id)
           .eq('calendly_invitee_uri', oldInviteeUri)
