@@ -4838,6 +4838,20 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
 
   const apptId = appt.appointmentId || appt.id || null;
 
+  // ── closer: body.user firstName+lastName → calendar_name fallback ────────────
+  const closer = [
+    rawPayload.user?.firstName || '',
+    rawPayload.user?.lastName  || '',
+  ].filter(Boolean).join(' ').trim()
+    || appt.title || appt.calendarTitle || '';
+  console.log(`[GHL Parser] resolved closer="${closer || '(none)'}"`);
+
+  // ── calendar_id: nested body.calendar.id → top-level variants ────────────────
+  const calendarId = (rawPayload.calendar && (rawPayload.calendar.id || rawPayload.calendar.calendarId))
+    || rawPayload.calendarId || rawPayload.calendar_id
+    || appt.calendarId || appt.calendar_id || null;
+  console.log(`[GHL Parser] resolved calendarId=${calendarId || '(none)'}`);
+
   // Extract qualification answers early so they're available for both UPDATE and INSERT
   const qualAnswers  = _ghlProvider.extractQualificationAnswers(rawPayload);
   const answerCount  = Object.keys(qualAnswers).length;
@@ -4850,7 +4864,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   // Try to find existing call by provider_event_id
   if (apptId) {
     const { data: existing, error: lookupErr } = await supabase.from('calls')
-      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion')
+      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion, closer, calendar_id')
       .eq('cliente_id', cliente_id).eq('provider_event_id', apptId).maybeSingle();
     if (lookupErr) console.warn(`[GHL UpsertCall] Lookup error: ${lookupErr.message}`);
 
@@ -4869,6 +4883,8 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
           ? { preguntas_calificacion: preguntasCalificacion || existing.preguntas_calificacion } : {}),
         ...(apptId                                      && { provider_event_id: apptId }),
         ...((appt.title || appt.calendarTitle)          && { calendar_name: appt.title || appt.calendarTitle }),
+        ...(closer || existing.closer                   ? { closer: closer || existing.closer } : {}),
+        ...(calendarId || existing.calendar_id          ? { calendar_id: calendarId || existing.calendar_id } : {}),
       };
       if (isUpdate && appt.startTime && appt.startTime !== existing.fecha_llamada) {
         updatePatch.reagendada = true;
@@ -4922,6 +4938,8 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     provider_event_id:      apptId         || null,
     calendar_name:          appt.title     || appt.calendarTitle || null,
     preguntas_calificacion: preguntasCalificacion,
+    closer:                 closer         || null,
+    calendar_id:            calendarId     || null,
   };
 
   console.log(`[GHL UpsertCall] Supabase INSERT calls: ${JSON.stringify(fullRow)}`);
