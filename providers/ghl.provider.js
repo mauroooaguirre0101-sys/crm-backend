@@ -195,13 +195,30 @@ function extractInstagram(contact) {
   return '';
 }
 
+// List appointments/events within a time range for a location
+async function listAppointments(accessToken, locationId, startTime, endTime) {
+  const params = new URLSearchParams({ locationId });
+  if (startTime) params.set('startTime', startTime);
+  if (endTime)   params.set('endTime', endTime);
+  const data = await _apiCall('GET', `/calendars/events?${params}`, null, accessToken);
+  return data?.appointments || data?.events || [];
+}
+
 // Map GHL appointment status to CRM call estado
 function mapAppointmentStatus(ghlStatus) {
   switch ((ghlStatus || '').toLowerCase()) {
-    case 'cancelled': case 'cancel': return 'Cancelada';
-    case 'showed':    case 'show':   return 'Completada';
-    case 'noshow':    case 'no_show':return 'No asistió';
-    default:                         return 'Pendiente';
+    case 'cancelled':
+    case 'cancel':     return 'Cancelada';
+    case 'showed':
+    case 'show':
+    case 'completed':  return 'Completada';
+    case 'noshow':
+    case 'no_show':
+    case 'no-show':    return 'No asistió';
+    case 'booked':
+    case 'confirmed':
+    case 'new':        return 'Pendiente';
+    default:           return 'Pendiente';
   }
 }
 
@@ -212,6 +229,7 @@ module.exports = {
   getLocation,
   getContact,
   getAppointment,
+  listAppointments,
   createWebhookSubscription,
   deleteWebhookSubscription,
   listWebhooks,
