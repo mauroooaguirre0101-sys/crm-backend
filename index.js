@@ -4983,7 +4983,7 @@ app.get('/ghl/connect', (req, res) => {
   if (!process.env.GHL_CLIENT_ID)    return res.status(503).send('GHL_CLIENT_ID not configured');
 
   const backendUrl  = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
-  const redirectUri = `${backendUrl}/ghl/callback`;
+  const redirectUri = `${backendUrl}/oauth/callback`;
   const state       = Buffer.from(JSON.stringify({ cliente_id, nonce: require('crypto').randomBytes(8).toString('hex') })).toString('base64url');
 
   const authUrl = _ghlProvider.buildOAuthURL(redirectUri, state);
@@ -4991,8 +4991,8 @@ app.get('/ghl/connect', (req, res) => {
   res.redirect(authUrl);
 });
 
-// GET /ghl/callback — OAuth callback from GHL
-app.get('/ghl/callback', async (req, res) => {
+// GET /oauth/callback — OAuth callback from GHL (GHL disallows "ghl" in redirect URI)
+app.get('/oauth/callback', async (req, res) => {
   const { code, state, error: oauthError } = req.query;
 
   if (oauthError) {
@@ -5012,7 +5012,7 @@ app.get('/ghl/callback', async (req, res) => {
 
   try {
     const backendUrl  = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
-    const redirectUri = `${backendUrl}/ghl/callback`;
+    const redirectUri = `${backendUrl}/oauth/callback`;
 
     console.log(`[GHL OAuth] Exchanging code for tokens — negocio=${cliente_id}`);
     const tokens     = await _ghlProvider.exchangeCode(code, redirectUri);
