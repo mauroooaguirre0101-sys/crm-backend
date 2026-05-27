@@ -368,7 +368,7 @@ app.post('/leads', validateAccess, async (req, res) => {
       nombre:        nombre.trim(),
       instagram:     instagram ? instagram.trim().replace(/^@/, '').toLowerCase() : '',
       origen:        ['Inbound','Outbound'].includes(origen) ? origen : 'Inbound',
-      tipo:          ['Ads','Organico','Outbound','Seguidor'].includes(tipo) ? tipo : 'Organico',
+      tipo:          ['Ads','Organico','Outbound'].includes(tipo) ? tipo : 'Organico',
       etiqueta:      etiqueta || '',
       estado:        estado || 'Primer contacto',
       ultima_accion: ultima_accion || '',
@@ -737,7 +737,7 @@ app.post('/lead', validateAccess, async (req, res) => {
     const ALLOWED_ORIGEN = ['Inbound', 'Outbound'];
     const origenFinal = ALLOWED_ORIGEN.includes(origen) ? origen : 'Inbound';
     const etiquetaFinal = etiqueta || '';
-    const tipoLead = tipoFinal === 'seguidor' ? 'Seguidor' : 'Organico';
+    const tipoLead = 'Organico';
     const now = new Date().toISOString();
 
     // Check if lead already exists for this client
@@ -3494,12 +3494,6 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     const piezas = (contenidoRes.data || []).map(r => ({ id: r.id, ...(r.data || {}) }));
 
     // ── Métricas de ventas (semana actual) ──
-    const SEG_LABELS = new Set(['seguidor nuevo', 'seguir nuevo']);
-    const _isSegNuevo = (lead) => {
-      const ets = Array.isArray(lead.etiquetas) && lead.etiquetas.length
-        ? lead.etiquetas : lead.etiqueta ? [lead.etiqueta] : [];
-      return ets.some(e => SEG_LABELS.has((e || '').toLowerCase().trim()));
-    };
     const cerradosNow    = leadsNow.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
     const agendasCount   = leadsNow.filter(l => l.estado === 'Agendado').length;
     const facturacion    = ingCur.filter(i => i.concepto === 'Venta Nueva').reduce((s, i) => s + (Number(i.usd) || 0), 0);
@@ -3507,10 +3501,6 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     const egresoTotal    = egresosCur.reduce((s, e) => s + (Number(e.usd) || 0), 0);
     const showsCount     = callsCur.filter(c => !['No asistió', 'Cancelada', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
     const aov            = cerradosNow.length > 0 ? Math.round(facturacion / cerradosNow.length) : 0;
-    const seguidoresNow  = leadsNow.filter(_isSegNuevo).length;
-    const orgLeadsNow    = leadsNow.length - seguidoresNow;
-    const seguidoresPrev = leadsPrev.filter(_isSegNuevo).length;
-    const orgLeadsPrev   = leadsPrev.length - seguidoresPrev;
 
     // ── Métricas semana anterior ──
     const cerradosPrev       = leadsPrev.filter(l => REPORT_ESTADO_CERRADO.has(l.estado));
@@ -3526,15 +3516,13 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     // ── Comparativa ──
     const comparativa = {
       semana_anterior: {
-        seguidores_nuevos: seguidoresPrev,
-        leads:             orgLeadsPrev,
-        cerrados:          cerradosPrev.length,
-        facturacion:       facturacionPrev,
-        cash_collected:    cashCollectedPrev,
-        calls:             callsPrev.length,
+        leads:          leadsPrev.length,
+        cerrados:       cerradosPrev.length,
+        facturacion:    facturacionPrev,
+        cash_collected: cashCollectedPrev,
+        calls:          callsPrev.length,
       },
-      delta_seguidores:     _reportFmtDelta(seguidoresNow,  seguidoresPrev),
-      delta_leads:          _reportFmtDelta(orgLeadsNow,    orgLeadsPrev),
+      delta_leads:          _reportFmtDelta(leadsNow.length, leadsPrev.length),
       delta_cerrados:       _reportFmtDelta(cerradosNow.length,    cerradosPrev.length),
       delta_facturacion:    _reportFmtDelta(facturacion,           facturacionPrev),
       delta_cash_collected: _reportFmtDelta(cashCollected,         cashCollectedPrev),
@@ -3544,8 +3532,7 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     // ── Objeto metricas final ──
     const metricas = {
       ventas: {
-        seguidores_nuevos: seguidoresNow,
-        leads:             orgLeadsNow,
+        leads: leadsNow.length,
         agendas:           agendasCount,
         cerrados:          cerradosNow.length,
         facturacion,
