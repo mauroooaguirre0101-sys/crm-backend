@@ -4897,6 +4897,37 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
   return data.id;
 }
 
+// Save raw GHL payload to calls_ghl table for cliente_2 audit trail
+async function _ghlSaveRawPayload({ cliente_id, call_id, eventType, inferred, rawBody, contact, calendar }) {
+  try {
+    const c = contact || {};
+    const row = {
+      cliente_id,
+      call_id:            call_id    || null,
+      contact_id:         c.id       || rawBody.contactId || rawBody.contact_id || null,
+      first_name:         c.firstName || null,
+      last_name:          c.lastName  || null,
+      full_name:          [c.firstName, c.lastName].filter(Boolean).join(' ') || c.name || null,
+      email:              c.email     || null,
+      phone:              c.phone     || null,
+      calendar:           calendar   ? JSON.stringify(calendar)                          : null,
+      workflow:           rawBody.workflow          ? JSON.stringify(rawBody.workflow)          : null,
+      trigger_data:       rawBody.triggerData       ? JSON.stringify(rawBody.triggerData)       : null,
+      location:           rawBody.location          ? JSON.stringify(rawBody.location)          : null,
+      attribution_source: rawBody.attributionSource ? JSON.stringify(rawBody.attributionSource) : null,
+      custom_data:        rawBody.customData        ? JSON.stringify(rawBody.customData)        : null,
+      raw_payload:        JSON.stringify(rawBody),
+      event_type:         eventType  || null,
+      inferred:           !!inferred,
+    };
+    const { error } = await supabase.from('calls_ghl').insert(row);
+    if (error) console.warn(`[GHL RawLog] Insert to calls_ghl failed: ${error.message} | code=${error.code}`);
+    else console.log(`[GHL RawLog] ✓ Raw payload saved to calls_ghl (call_id=${call_id || 'pending'})`);
+  } catch (err) {
+    console.warn(`[GHL RawLog] Unexpected error: ${err.message}`);
+  }
+}
+
 // POST /webhooks/ghl  (also /api/ghl/webhook) — receives GHL appointment events
 app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
   const ts = new Date().toISOString();
@@ -4915,11 +4946,13 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
     const rawBody      = req.body || {};
 
     // Normalize payload — handles GHL v1/v2/workflow field name variations
-    const { type: eventType, appointmentId, contactId, locationId } =
+    const { type: eventType, inferred, appointmentId, contactId, locationId, embeddedContact, embeddedCalendar } =
       _ghlProvider.normalizeWebhookPayload(rawBody);
 
-    console.log(`[GHL Webhook] Parsed → eventType=${eventType || '?'} appointmentId=${appointmentId || '?'} contactId=${contactId || '?'} locationId=${locationId || '?'} webhookToken=${webhookToken || 'none'}`);
-    console.log(`[GHL Webhook] Location sources → body.locationId=${rawBody.locationId || '—'} body.location_id=${rawBody.location_id || '—'} body.location?.id=${rawBody.location?.id || '—'} body.payload?.location?.id=${rawBody.payload?.location?.id || '—'} → resolved=${locationId || 'NONE'}`);
+    console.log(`[GHL Webhook] Parsed → eventType=${eventType || 'NONE'} inferred=${inferred} appointmentId=${appointmentId || '?'} contactId=${contactId || '?'} locationId=${locationId || '?'}`);
+    if (inferred) console.log(`[GHL Webhook] inferred eventType=AppointmentCreate (payload has calendar+contact but no type field)`);
+    console.log(`[GHL Webhook] Embedded objects → contact=${embeddedContact ? 'YES' : 'no'} calendar=${embeddedCalendar ? 'YES' : 'no'}`);
+    console.log(`[GHL Webhook] Location sources → body.locationId=${rawBody.locationId || '—'} body.location?.id=${rawBody.location?.id || '—'} → resolved=${locationId || 'NONE'}`);
 
     // Identify negocio from webhook token (?t=TOKEN in URL)
     let cliente_id = null;
@@ -4973,20 +5006,23 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
     }
 
     if (!eventType) {
-      console.warn(`[GHL Webhook] ❌ Missing event type in payload — body keys: ${Object.keys(rawBody).join(', ')}`);
-      return res.status(400).json({ error: 'Missing event type' });
+      // No type and no calendar+contact to infer from — log and accept (don't 400, GHL expects 200)
+      console.warn(`[GHL Webhook] ⚠ Could not determine eventType — body keys: ${Object.keys(rawBody).join(', ')}`);
+      await _ghlSaveRawPayload({ cliente_id, call_id: null, eventType: null, inferred: false, rawBody, contact: null, calendar: null });
+      return res.json({ ok: true, info: 'Event received but type could not be determined — saved to calls_ghl for review' });
     }
 
-    console.log(`[GHL Webhook] Processing eventType=${eventType} for cliente_id=${cliente_id}`);
+    console.log(`[GHL Webhook] Processing eventType=${eventType}${inferred ? ' (inferred)' : ''} for cliente_id=${cliente_id}`);
 
     if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'].includes(eventType)) {
       console.log(`[GHL Webhook] Skipping unhandled event type: ${eventType}`);
+      await _ghlSaveRawPayload({ cliente_id, call_id: null, eventType, inferred, rawBody, contact: null, calendar: null });
       return res.json({ ok: true, info: `Unhandled: ${eventType}` });
     }
 
-    _logGhlWebhook({ eventType, appointmentId, contactId, cliente_id, status: 'processing' });
+    _logGhlWebhook({ eventType, inferred, appointmentId, contactId, cliente_id, status: 'processing' });
 
-    // AppointmentDelete — mark existing call Cancelada without needing API token
+    // AppointmentDelete — mark existing call Cancelada (no API token needed)
     if (eventType === 'AppointmentDelete') {
       if (appointmentId) {
         console.log(`[GHL Webhook] Supabase UPDATE calls SET estado=Cancelada WHERE provider_event_id=${appointmentId}`);
@@ -4994,24 +5030,18 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
           .update({ estado: 'Cancelada' })
           .eq('cliente_id', cliente_id).eq('provider_event_id', appointmentId).select('id');
         if (error) {
-          console.error(`[GHL Webhook] ❌ Delete update failed: ${error.message} | code=${error.code} | details=${error.details}`);
+          console.error(`[GHL Webhook] ❌ Delete update failed: ${error.message} | code=${error.code}`);
         } else {
           console.log(`[GHL Webhook] ✓ AppointmentDelete → Cancelada rows=${updated?.length || 0} apptId=${appointmentId}`);
         }
       }
+      await _ghlSaveRawPayload({ cliente_id, call_id: null, eventType, inferred, rawBody, contact: null, calendar: embeddedCalendar });
       _logGhlWebhook({ eventType, appointmentId, cliente_id, status: 'deleted' });
       return res.json({ ok: true });
     }
 
-    // For Create/Update, prefer DB token then GHL_API_KEY env var
-    const conn     = await _getGhlToken(cliente_id);
-    const apiToken = conn?.access_token || process.env.GHL_API_KEY || null;
-    console.log(`[GHL Webhook] API token source: ${conn ? 'DB' : apiToken ? 'GHL_API_KEY env' : 'NONE'}`);
-    if (!apiToken) {
-      console.warn(`[GHL Webhook] ⚠ No API token — will use payload fields only (set GHL_API_KEY in Railway)`);
-    }
-
-    // Fetch full contact details; fall back to payload fields
+    // ── Build contact object ──────────────────────────────────────────────────
+    // Priority: embedded contact from payload > GHL API call > raw payload fields
     let contact = {
       id:        contactId || null,
       firstName: rawBody.firstName || rawBody.name || '',
@@ -5019,28 +5049,55 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
       email:     rawBody.email     || '',
       phone:     rawBody.phone     || '',
     };
-    if (contactId && apiToken) {
-      console.log(`[GHL Webhook] Fetching contact id=${contactId} from GHL API...`);
-      try {
-        contact = await _ghlProvider.getContact(apiToken, contactId);
-        const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(' ') || '(no name)';
-        console.log(`[GHL Webhook] ✓ Contact fetched: name="${fullName}" email=${contact.email || '—'} phone=${contact.phone || '—'}`);
-      } catch (e) {
-        console.warn(`[GHL Webhook] ⚠ Contact fetch failed id=${contactId}: ${e.message} — using payload fields`);
-      }
+
+    if (embeddedContact) {
+      contact = embeddedContact;
+      const fullName = [embeddedContact.firstName, embeddedContact.lastName].filter(Boolean).join(' ') || embeddedContact.name || '(no name)';
+      console.log(`[GHL Webhook] Contact source: EMBEDDED → name="${fullName}" email=${embeddedContact.email || '—'} phone=${embeddedContact.phone || '—'}`);
     } else {
-      console.log(`[GHL Webhook] Contact from payload: firstName=${contact.firstName || '—'} email=${contact.email || '—'}`);
+      const conn     = await _getGhlToken(cliente_id);
+      const apiToken = conn?.access_token || process.env.GHL_API_KEY || null;
+      console.log(`[GHL Webhook] API token source: ${conn ? 'DB' : apiToken ? 'GHL_API_KEY env' : 'NONE'}`);
+      if (contactId && apiToken) {
+        console.log(`[GHL Webhook] Contact source: GHL API (id=${contactId})`);
+        try {
+          contact = await _ghlProvider.getContact(apiToken, contactId);
+          const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(' ') || '(no name)';
+          console.log(`[GHL Webhook] ✓ Contact fetched: name="${fullName}" email=${contact.email || '—'} phone=${contact.phone || '—'}`);
+        } catch (e) {
+          console.warn(`[GHL Webhook] ⚠ Contact API fetch failed: ${e.message} — using payload fields`);
+        }
+      } else {
+        console.log(`[GHL Webhook] Contact source: PAYLOAD fields → firstName=${contact.firstName || '—'} email=${contact.email || '—'}`);
+      }
     }
 
-    // Merge normalized ID back into the payload object before upsert
-    const apptPayload = { ...rawBody, appointmentId, id: appointmentId };
-    console.log(`[GHL Webhook] Calling _ghlUpsertCall eventType=${eventType} apptId=${appointmentId} cliente_id=${cliente_id}`);
+    // ── Build appointment payload ─────────────────────────────────────────────
+    // Priority: embedded calendar object > raw body
+    let apptPayload;
+    if (embeddedCalendar) {
+      apptPayload = {
+        ...embeddedCalendar,
+        appointmentId: embeddedCalendar.id || embeddedCalendar.appointmentId || appointmentId,
+        id:            embeddedCalendar.id || appointmentId,
+      };
+      console.log(`[GHL Webhook] Appt source: EMBEDDED calendar → id=${apptPayload.id} title="${apptPayload.title || '—'}" startTime=${apptPayload.startTime || '—'} status=${apptPayload.appointmentStatus || '—'}`);
+    } else {
+      apptPayload = { ...rawBody, appointmentId, id: appointmentId };
+      console.log(`[GHL Webhook] Appt source: RAW body → apptId=${appointmentId}`);
+    }
 
+    // ── Upsert into calls table ───────────────────────────────────────────────
+    console.log(`[GHL Webhook] → _ghlUpsertCall eventType=${eventType} apptId=${apptPayload.id} cliente_id=${cliente_id}`);
     const callId = await _ghlUpsertCall(apptPayload, contact, cliente_id, eventType);
-    _logGhlWebhook({ eventType, appointmentId, contactId, cliente_id, callId,
+
+    // ── Save raw payload to calls_ghl (audit trail for cliente_2) ────────────
+    await _ghlSaveRawPayload({ cliente_id, call_id: callId, eventType, inferred, rawBody, contact, calendar: embeddedCalendar });
+
+    _logGhlWebhook({ eventType, inferred, appointmentId, contactId, cliente_id, callId,
       status: eventType === 'AppointmentUpdate' ? 'updated' : 'created' });
 
-    console.log(`[GHL Webhook] ✅ Done — callId=${callId} eventType=${eventType}`);
+    console.log(`[GHL Webhook] ✅ Done — callId=${callId} eventType=${eventType}${inferred ? ' (inferred)' : ''}`);
     res.json({ ok: true, call_id: callId });
 
   } catch (err) {

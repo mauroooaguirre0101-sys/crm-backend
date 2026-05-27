@@ -146,29 +146,43 @@ function generateWebhookToken() {
 // GHL v2 uses camelCase; some older/workflow webhooks use snake_case or nested objects
 function normalizeWebhookPayload(body) {
   // Event type — GHL v2: "AppointmentCreate"; v1/workflow: "appointment_created"
-  const type = body.type
+  let type = body.type
     || (body.event && _normalizeEventType(body.event))
     || null;
 
-  // Appointment ID — multiple possible locations
+  // Infer AppointmentCreate from new GHL workflow format:
+  // payload has no type/event field but contains calendar + contact objects
+  let inferred = false;
+  if (!type && body.calendar && body.contact) {
+    type = 'AppointmentCreate';
+    inferred = true;
+  }
+
+  // Appointment ID — top-level OR nested in body.calendar
   const appointmentId = body.id
     || body.appointmentId
     || body.appointment_id
     || body.resourceId
+    || (body.calendar && (body.calendar.id || body.calendar.appointmentId))
     || null;
 
-  // Contact ID — multiple possible locations
+  // Contact ID — top-level OR nested in body.contact
   const contactId = body.contactId
     || body.contact_id
     || (body.contact && (body.contact.id || body.contact._id))
     || null;
 
+  // Location ID — top-level, nested body.location, or nested body.payload.location
   const locationId = body.locationId || body.location_id
     || (body.location && (body.location.id || body.location._id))
     || (body.payload && body.payload.location && (body.payload.location.id || body.payload.location._id))
     || null;
 
-  return { type, appointmentId, contactId, locationId, raw: body };
+  // Embedded objects present in new GHL workflow format
+  const embeddedContact  = body.contact  || null;
+  const embeddedCalendar = body.calendar || null;
+
+  return { type, inferred, appointmentId, contactId, locationId, embeddedContact, embeddedCalendar, raw: body };
 }
 
 function _normalizeEventType(event) {
