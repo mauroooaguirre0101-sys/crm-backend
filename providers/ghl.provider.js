@@ -251,42 +251,64 @@ function extractInstagram(contact, rawPayload) {
   return '';
 }
 
-// Keys and patterns excluded from qualification answers (technical/metadata noise)
+// Metadata keys to exclude — GHL system fields that are NOT form answers
 const _QUAL_EXCLUDED_KEYS = new Set([
-  'id', '_id', 'contactid', 'contact_id', 'locationid', 'location_id',
-  'calendarid', 'calendar_id', 'workflowid', 'workflow_id',
+  // contact identity
+  'contact_id', 'contactid', 'first_name', 'firstname', 'last_name', 'lastname',
+  'full_name', 'fullname', 'name', 'email', 'phone', 'tags',
+  'country', 'timezone', 'date_created', 'datecreated',
+  'contact_source', 'contactsource', 'full_address', 'fulladdress',
+  'contact_type', 'contacttype',
+  // nested GHL objects (values are objects, not strings — skipped anyway, but exclude explicitly)
+  'location', 'user', 'calendar', 'workflow', 'triggerdata', 'customdata',
+  'attributionsource', 'attribution_source', 'contact',
+  // technical ids & timestamps
+  'id', '_id', 'locationid', 'location_id', 'calendarid', 'calendar_id',
+  'workflowid', 'workflow_id', 'triggerid', 'trigger_id',
+  'appointmentid', 'appointment_id',
   'createdat', 'created_at', 'updatedat', 'updated_at', 'timestamp',
-  'appointmentid', 'appointment_id', 'triggerid', 'trigger_id',
+  // event routing
+  'type', 'event', 'source',
 ]);
 const _QUAL_EXCLUDED_PATTERNS = [
   /\battribution\b/i, /\butm_/i, /\btracking\b/i,
-  /\bbrowser\b/i,    /\bplatform\b/i, /\bip\b/i, /\buser.?agent\b/i,
-  /\bgclid\b/i,      /\bfbclid\b/i,  /\bwebhook\b/i,
-  /_id$/i,           /^id$/i,
+  /\bbrowser\b/i, /\bplatform\b/i, /\bip\b/i, /\buser.?agent\b/i,
+  /\bgclid\b/i, /\bfbclid\b/i, /\bwebhook\b/i,
+  /_id$/i, /^id$/i,
 ];
 
-// Extract only the human-readable qualification answers from a GHL workflow payload.
-// Scans customData + triggerData, strips out all technical/metadata keys.
+// Extract human-readable qualification answers from a GHL workflow payload.
+// GHL sends form answers as TOP-LEVEL keys in the body (long Spanish question strings).
+// Also checks customData / triggerData as fallback.
 function extractQualificationAnswers(rawPayload) {
   if (!rawPayload) return {};
   const answers = {};
 
   const _exclude = (key) => {
-    const kl = key.toLowerCase().replace(/\s+/g, '');
+    const kl = key.toLowerCase().replace(/[\s¿?]/g, '').replace(/[^a-z0-9_]/g, '');
     return _QUAL_EXCLUDED_KEYS.has(kl) || _QUAL_EXCLUDED_PATTERNS.some(p => p.test(key));
   };
 
-  const scan = (obj) => {
-    if (!obj || typeof obj !== 'object') return;
-    for (const [key, val] of Object.entries(obj)) {
-      const strVal = typeof val === 'string' ? val.trim() : '';
-      if (!strVal || _exclude(key)) continue;
-      if (!answers[key]) answers[key] = strVal;
-    }
-  };
+  // 1. Scan TOP-LEVEL body keys — this is where GHL workflow sends form answers
+  for (const [key, val] of Object.entries(rawPayload)) {
+    const strVal = typeof val === 'string' ? val.trim() : '';
+    if (!strVal) continue; // skip objects, arrays, empty strings
+    if (_exclude(key)) continue;
+    console.log(`[GHL Parser] qualification candidate key="${key}"`);
+    answers[key] = strVal;
+  }
 
-  scan(rawPayload.customData);
-  scan(rawPayload.triggerData);
+  // 2. Also scan customData / triggerData (some GHL setups may use these)
+  for (const nested of [rawPayload.customData, rawPayload.triggerData]) {
+    if (!nested || typeof nested !== 'object') continue;
+    for (const [key, val] of Object.entries(nested)) {
+      const strVal = typeof val === 'string' ? val.trim() : '';
+      if (!strVal || _exclude(key) || answers[key]) continue;
+      console.log(`[GHL Parser] qualification candidate key="${key}" (nested)`);
+      answers[key] = strVal;
+    }
+  }
+
   return answers;
 }
 
