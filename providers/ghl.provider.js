@@ -150,10 +150,9 @@ function normalizeWebhookPayload(body) {
     || (body.event && _normalizeEventType(body.event))
     || null;
 
-  // Infer AppointmentCreate from new GHL workflow format:
-  // payload has no type/event field but contains calendar + contact objects
+  // Infer AppointmentCreate if ANY GHL workflow signal is present and no explicit type
   let inferred = false;
-  if (!type && body.calendar && body.contact) {
+  if (!type && (body.calendar || body.workflow || body.contact || body.contact_id || body.contactId || body.triggerData)) {
     type = 'AppointmentCreate';
     inferred = true;
   }

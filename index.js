@@ -4950,7 +4950,7 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
       _ghlProvider.normalizeWebhookPayload(rawBody);
 
     console.log(`[GHL Webhook] Parsed → eventType=${eventType || 'NONE'} inferred=${inferred} appointmentId=${appointmentId || '?'} contactId=${contactId || '?'} locationId=${locationId || '?'}`);
-    if (inferred) console.log(`[GHL Webhook] inferred eventType=AppointmentCreate (payload has calendar+contact but no type field)`);
+    if (inferred) console.log(`[GHL Webhook] inferred eventType=AppointmentCreate (fallback)`);
     console.log(`[GHL Webhook] Embedded objects → contact=${embeddedContact ? 'YES' : 'no'} calendar=${embeddedCalendar ? 'YES' : 'no'}`);
     console.log(`[GHL Webhook] Location sources → body.locationId=${rawBody.locationId || '—'} body.location?.id=${rawBody.location?.id || '—'} → resolved=${locationId || 'NONE'}`);
 
