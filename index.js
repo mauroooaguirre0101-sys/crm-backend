@@ -571,7 +571,8 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       reporte,
       info_previa,
       preguntas_calificacion,
-      fecha_llamada
+      fecha_llamada,
+      monto_sena,
     } = req.body;
 
     motivo_no_cierre = motivo_no_cierre || '';
@@ -608,6 +609,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     if (info_previa      !== undefined) patch.info_previa        = info_previa;
     if (preguntas_calificacion !== undefined) patch.preguntas_calificacion = preguntas_calificacion;
     if ('fecha_llamada' in req.body)    patch.fecha_llamada      = fecha_llamada || null;
+    if (monto_sena             !== undefined) patch.monto_sena           = monto_sena !== null ? parseFloat(monto_sena) : null;
 
     const { error } = await supabase
       .from('calls')
@@ -629,6 +631,9 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       case 'Cierre PIF':
         nuevoEstadoLead = 'Cerrado';
         break;
+      case 'Seña':
+        nuevoEstadoLead = 'Seña';
+        break;
       case 'Seguimiento Post Call':
         nuevoEstadoLead = 'Seguimiento Post Call';
         break;
@@ -647,11 +652,29 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     }
 
     if (nuevoEstadoLead) {
-      await supabase
-        .from('leads')
-        .update({ estado: nuevoEstadoLead })
-        .eq('instagram', callData.instagram)
-        .eq('cliente_id', req.cliente_id);
+      let updated = false;
+      if (callData.instagram) {
+        const { data: matched } = await supabase
+          .from('leads').select('id')
+          .ilike('instagram', callData.instagram)
+          .eq('cliente_id', req.cliente_id)
+          .limit(1).maybeSingle();
+        if (matched) {
+          await supabase.from('leads').update({ estado: nuevoEstadoLead }).eq('id', matched.id);
+          updated = true;
+        }
+      }
+      // Fallback: match by nombre when instagram didn't find anything
+      if (!updated && callData.nombre && callData.nombre !== 'Sin nombre') {
+        const { data: byNombre } = await supabase
+          .from('leads').select('id')
+          .ilike('nombre', callData.nombre)
+          .eq('cliente_id', req.cliente_id)
+          .limit(1).maybeSingle();
+        if (byNombre) {
+          await supabase.from('leads').update({ estado: nuevoEstadoLead }).eq('id', byNombre.id);
+        }
+      }
     }
 
     res.json({ ok: true });
