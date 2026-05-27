@@ -4787,12 +4787,24 @@ async function _ghlUpdateLeadAgendado(instagram, name, cliente_id) {
 }
 
 // Create or update a call in the `calls` table from a GHL appointment + contact
-async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
-  const instagram = _ghlProvider.extractInstagram(contact) || '';
-  const nombre    = [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim()
-                    || contact.name || contact.email || 'Sin nombre';
-  const email     = contact.email || '';
-  const telefono  = contact.phone || '';
+// rawPayload: original webhook body — used for nombre fallback, instagram scan, reporte_ghl
+async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload = {}) {
+  // ── nombre: camelCase → snake_case → top-level payload → fallback ──────────
+  const nombre = [
+    contact.firstName || contact.first_name || rawPayload.first_name || '',
+    contact.lastName  || contact.last_name  || rawPayload.last_name  || '',
+  ].filter(Boolean).join(' ').trim()
+    || contact.full_name || rawPayload.full_name
+    || contact.name      || rawPayload.name
+    || contact.email     || 'Sin nombre';
+  console.log(`[GHL Parser] resolved nombre="${nombre}"`);
+
+  // ── instagram: customFields → customData → triggerData → notes ────────────
+  const instagram = _ghlProvider.extractInstagram(contact, rawPayload) || '';
+  console.log(`[GHL Parser] resolved instagram=${instagram || '(none)'}`);
+
+  const email     = contact.email || rawPayload.email || '';
+  const telefono  = contact.phone || rawPayload.phone || '';
   const estado    = _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
 
   const isUpdate    = eventType === 'AppointmentUpdate';
@@ -4852,6 +4864,16 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
     numero_llamada = (prev?.length || 0) + 1;
   }
 
+  // Build reporte_ghl: all form responses + calendar + contact + metadata
+  const reporteGhl = JSON.stringify({
+    calendar:          appt,
+    contact:           contact,
+    customData:        rawPayload.customData        || null,
+    triggerData:       rawPayload.triggerData       || null,
+    attributionSource: rawPayload.attributionSource || null,
+    workflow:          rawPayload.workflow           || null,
+  });
+
   const fullRow = {
     cliente_id,
     nombre,
@@ -4867,6 +4889,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
     link_llamada:      meetingLink     || null,
     provider_event_id: apptId         || null,
     calendar_name:     appt.title     || appt.calendarTitle || null,
+    reporte_ghl:       reporteGhl,
   };
 
   console.log(`[GHL UpsertCall] Supabase INSERT calls: ${JSON.stringify(fullRow)}`);
@@ -5072,6 +5095,16 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
       }
     }
 
+    // Enrich contact with top-level payload fields (GHL sometimes sends first_name/last_name at root)
+    if (rawBody.first_name || rawBody.last_name) {
+      contact = {
+        ...contact,
+        firstName: contact.firstName || rawBody.first_name || '',
+        lastName:  contact.lastName  || rawBody.last_name  || '',
+      };
+      console.log(`[GHL Webhook] Contact enriched with top-level name fields: "${contact.firstName} ${contact.lastName}".trim()`);
+    }
+
     // ── Build appointment payload ─────────────────────────────────────────────
     // Priority: embedded calendar object > raw body
     let apptPayload;
@@ -5089,7 +5122,7 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
 
     // ── Upsert into calls table ───────────────────────────────────────────────
     console.log(`[GHL Webhook] → _ghlUpsertCall eventType=${eventType} apptId=${apptPayload.id} cliente_id=${cliente_id}`);
-    const callId = await _ghlUpsertCall(apptPayload, contact, cliente_id, eventType);
+    const callId = await _ghlUpsertCall(apptPayload, contact, cliente_id, eventType, rawBody);
 
     // ── Save raw payload to calls_ghl (audit trail for cliente_2) ────────────
     await _ghlSaveRawPayload({ cliente_id, call_id: callId, eventType, inferred, rawBody, contact, calendar: embeddedCalendar });
@@ -5371,7 +5404,7 @@ app.post('/ghl/sync', async (req, res) => {
             .catch(e => { console.warn(`[GHL Sync] Contact ${appt.contactId}: ${e.message}`); return {}; });
         }
         const apptPayload = { ...appt, appointmentId: appt.id };
-        const callId = await _ghlUpsertCall(apptPayload, contact, cliente_id, 'AppointmentCreate');
+        const callId = await _ghlUpsertCall(apptPayload, contact, cliente_id, 'AppointmentCreate', appt);
         if (callId) synced++; else skipped++;
       } catch (err) {
         console.error(`[GHL Sync] Appt ${appt.id} error: ${err.message}`);

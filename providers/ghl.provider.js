@@ -193,21 +193,42 @@ function _normalizeEventType(event) {
   return map[event?.toLowerCase()] || event;
 }
 
-// Extract instagram handle from a GHL contact's custom fields or notes
-function extractInstagram(contact) {
-  if (!contact) return '';
+// Extract instagram handle from contact fields, customData, triggerData, or notes
+function extractInstagram(contact, rawPayload = {}) {
+  if (!contact) contact = {};
+
+  const _isIgKey = (k) => {
+    const kl = String(k).toLowerCase();
+    return kl.includes('instagram') || kl === 'ig' || kl.startsWith('ig_')
+      || kl.includes(' ig') || kl.includes('@') || kl.includes('usuario');
+  };
+  const _clean = (v) => String(v).replace(/^@/, '').replace(/\s+/g, '').toLowerCase().trim();
+
+  // 1. contact.customField / customFields array (OAuth / GHL API format)
   const customFields = contact.customField || contact.customFields || [];
   for (const cf of customFields) {
     const key = String(cf.id || cf.key || cf.name || cf.fieldKey || '').toLowerCase();
     const val = String(cf.value || '').trim();
-    if (val && (key.includes('instagram') || key === 'ig' || key.startsWith('ig_'))) {
-      return val.replace(/^@/, '').replace(/\s+/g, '').toLowerCase();
-    }
+    if (val && _isIgKey(key)) return _clean(val);
   }
-  // Fallback: search notes for @handle pattern
+
+  // 2. customData flat object (GHL workflow format — "¿Cuál es tu Instagram?": "handle")
+  const customData = rawPayload.customData || contact.customData || {};
+  for (const [key, val] of Object.entries(customData)) {
+    if (val && _isIgKey(key)) return _clean(String(val));
+  }
+
+  // 3. triggerData flat object
+  const triggerData = rawPayload.triggerData || contact.triggerData || {};
+  for (const [key, val] of Object.entries(triggerData)) {
+    if (val && typeof val === 'string' && _isIgKey(key)) return _clean(val);
+  }
+
+  // 4. Fallback: search notes for @handle pattern
   const notes = String(contact.notes || '');
   const match = notes.match(/@([\w.]+)/);
   if (match) return match[1].toLowerCase();
+
   return '';
 }
 
