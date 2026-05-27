@@ -4803,9 +4803,11 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   const instagram = _ghlProvider.extractInstagram(contact, rawPayload) || '';
   console.log(`[GHL Parser] resolved instagram=${instagram || '(none)'}`);
 
-  const email     = contact.email || rawPayload.email || '';
-  const telefono  = contact.phone || rawPayload.phone || '';
-  const estado    = _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
+  const email    = contact.email || rawPayload.email || '';
+  const telefono = contact.phone || contact.phone_raw || contact.full_phone_number
+    || rawPayload.phone || rawPayload.phone_raw || rawPayload.contact?.phone || '';
+  console.log(`[GHL Parser] resolved phone=${telefono || '(none)'}`);
+  const estado   = _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
 
   const isUpdate    = eventType === 'AppointmentUpdate';
   const isDelete    = eventType === 'AppointmentDelete';
