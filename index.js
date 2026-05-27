@@ -506,7 +506,8 @@ app.get('/calls', validateAccess, async (req, res) => {
 // ===============================
 app.post('/call/precall', validateAccess, async (req, res) => {
   try {
-    const { nombre, instagram, whatsapp, info_previa, origen, fecha_llamada } = req.body;
+    const { nombre, instagram, whatsapp, info_previa, origen, fecha_llamada,
+            closer, calendar_name, email } = req.body;
 
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
@@ -537,7 +538,10 @@ app.post('/call/precall', validateAccess, async (req, res) => {
         seguimientos: 0,
         responde: false,
         cliente_id: req.cliente_id,
-        ...(fecha_llamada ? { fecha_llamada } : {})
+        ...(fecha_llamada   ? { fecha_llamada }   : {}),
+        ...(closer          ? { closer }           : {}),
+        ...(calendar_name   ? { calendar_name }    : {}),
+        ...(email           ? { email }            : {})
       });
 
     if (error) {
@@ -573,6 +577,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       preguntas_calificacion,
       fecha_llamada,
       monto_sena,
+      closer,
     } = req.body;
 
     motivo_no_cierre = motivo_no_cierre || '';
@@ -610,6 +615,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     if (preguntas_calificacion !== undefined) patch.preguntas_calificacion = preguntas_calificacion;
     if ('fecha_llamada' in req.body)    patch.fecha_llamada      = fecha_llamada || null;
     if (monto_sena             !== undefined) patch.monto_sena           = monto_sena !== null ? parseFloat(monto_sena) : null;
+    if (closer                 !== undefined) patch.closer               = closer || null;
 
     const { error } = await supabase
       .from('calls')
