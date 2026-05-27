@@ -4711,6 +4711,484 @@ app.delete('/calendly/mappings/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ══════════════════════════════════════════════════════
+// 🏢  GHL INTEGRATION (GoHighLevel per-negocio)
+// ══════════════════════════════════════════════════════
+
+const _ghlProvider = require('./providers/ghl.provider');
+
+// Determine which calendar provider a negocio uses.
+// Set env var GHL_NEGOCIO_IDS="cliente_2,cliente_5" to add more.
+function _getCalendarProvider(negocio_id) {
+  const ghlIds = (process.env.GHL_NEGOCIO_IDS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  return ghlIds.includes(negocio_id) ? 'ghl' : 'calendly';
+}
+
+// In-memory webhook log (last 50 events) for /ghl/debug
+const _ghlWebhookLog = [];
+function _logGhlWebhook(entry) {
+  _ghlWebhookLog.unshift({ ...entry, at: new Date().toISOString() });
+  if (_ghlWebhookLog.length > 50) _ghlWebhookLog.pop();
+}
+
+// Get + auto-refresh GHL access token for a negocio
+async function _getGhlToken(negocio_id) {
+  const { data: conn } = await supabase
+    .from('calendar_integrations')
+    .select('*')
+    .eq('negocio_id', negocio_id)
+    .eq('provider', 'ghl')
+    .maybeSingle();
+  if (!conn) return null;
+
+  try {
+    const result = await _ghlProvider.ensureFreshToken(conn);
+    if (result.updated) {
+      await supabase.from('calendar_integrations').update({
+        access_token:     result.accessToken,
+        refresh_token:    result.newRefresh,
+        token_expires_at: result.newExpires,
+        updated_at:       new Date().toISOString(),
+      }).eq('negocio_id', negocio_id).eq('provider', 'ghl');
+      console.log(`[GHL OAuth] Token refreshed for negocio=${negocio_id}`);
+    }
+    return { ...conn, access_token: result.accessToken };
+  } catch (err) {
+    console.error(`[GHL OAuth] Token refresh failed negocio=${negocio_id}:`, err.message);
+    return conn;
+  }
+}
+
+// Auto-update matching lead to 'Agendado' — same logic as Calendly version
+async function _ghlUpdateLeadAgendado(instagram, name, cliente_id) {
+  const FINAL = ['Cerrado', 'Seña', 'Perdido', 'Perdido Post Call', 'No Show'];
+  let lead = null; let matchedBy = '';
+
+  if (instagram) {
+    const { data } = await supabase.from('leads').select('id, estado')
+      .eq('cliente_id', cliente_id).ilike('instagram', instagram).limit(1).maybeSingle();
+    if (data) { lead = data; matchedBy = 'instagram'; }
+  }
+  if (!lead && name && name !== 'Sin nombre') {
+    const { data } = await supabase.from('leads').select('id, estado')
+      .eq('cliente_id', cliente_id).ilike('nombre', name)
+      .order('updated_at', { ascending: false }).limit(1).maybeSingle();
+    if (data) { lead = data; matchedBy = 'nombre'; }
+  }
+  if (!lead) { console.log(`[GHL] No lead match for Agendado — ig="${instagram}" name="${name}"`); return; }
+  if (FINAL.includes(lead.estado)) { console.log(`[GHL] Lead id=${lead.id} already "${lead.estado}" — skipping`); return; }
+
+  const { error } = await supabase.from('leads')
+    .update({ estado: 'Agendado', updated_at: new Date().toISOString() })
+    .eq('id', lead.id).eq('cliente_id', cliente_id);
+  if (error) console.warn(`[GHL] Lead Agendado update failed: ${error.message}`);
+  else console.log(`[GHL] ✓ Lead id=${lead.id} → Agendado (matched by ${matchedBy})`);
+}
+
+// Create or update a call in the `calls` table from a GHL appointment + contact
+async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
+  const instagram = _ghlProvider.extractInstagram(contact) || '';
+  const nombre    = [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim()
+                    || contact.name || contact.email || 'Sin nombre';
+  const email     = contact.email || '';
+  const telefono  = contact.phone || '';
+  const estado    = _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
+
+  // For Update events, mark reagendada if dates changed
+  const isUpdate  = eventType === 'AppointmentUpdate';
+  const isDelete  = eventType === 'AppointmentDelete';
+
+  // Prefer zoom/meet link in address field; GHL puts the join URL there
+  const meetingLink = (appt.address && appt.address.startsWith('http')) ? appt.address : null;
+
+  // Try to find existing call by provider_event_id
+  if (appt.id) {
+    const { data: existing } = await supabase.from('calls').select('id, estado')
+      .eq('cliente_id', cliente_id).eq('provider_event_id', appt.id).maybeSingle();
+
+    if (existing) {
+      const updatePatch = {
+        fecha_llamada: appt.startTime || null,
+        estado:        isDelete ? 'Cancelada' : estado,
+        ...(meetingLink && { link_llamada: meetingLink }),
+        ...(isUpdate    && { reagendada: true }),
+      };
+      const { error } = await supabase.from('calls')
+        .update(updatePatch).eq('id', existing.id).eq('cliente_id', cliente_id);
+      if (error) throw new Error(`[GHL] Update call failed: ${error.message}`);
+      console.log(`[GHL] ✓ Updated call id=${existing.id} event=${eventType} estado=${updatePatch.estado}`);
+      return existing.id;
+    }
+  }
+
+  if (isDelete) {
+    console.log(`[GHL] AppointmentDelete — no existing call found for appt.id=${appt.id}, skipping`);
+    return null;
+  }
+
+  // Count existing calls for this instagram to set numero_llamada
+  let numero_llamada = 1;
+  if (instagram) {
+    const { data: prev } = await supabase.from('calls').select('id')
+      .eq('instagram', instagram).eq('cliente_id', cliente_id);
+    numero_llamada = (prev?.length || 0) + 1;
+  }
+
+  const fullRow = {
+    cliente_id,
+    nombre,
+    instagram,
+    whatsapp:          telefono,
+    email,
+    origen:            'GHL',
+    estado,
+    numero_llamada,
+    seguimientos:      0,
+    responde:          false,
+    fecha_llamada:     appt.startTime    || null,
+    link_llamada:      meetingLink       || null,
+    provider_event_id: appt.id          || null,
+    calendar_name:     appt.title       || null,
+  };
+
+  let { data, error } = await supabase.from('calls').insert(fullRow).select('id').single();
+
+  if (error) {
+    console.warn(`[GHL] Full insert failed (${error.message}) — retrying with core fields`);
+    const coreRow = {
+      cliente_id, nombre, instagram, whatsapp: telefono, email,
+      origen: 'GHL', estado, numero_llamada, seguimientos: 0, responde: false,
+      fecha_llamada: appt.startTime || null, link_llamada: meetingLink || null,
+    };
+    ({ data, error } = await supabase.from('calls').insert(coreRow).select('id').single());
+    if (error) throw new Error(`[GHL] Core insert also failed: ${error.message}`);
+  }
+
+  console.log(`[GHL] ✓ Created call id=${data.id} for "${nombre}" email=${email} fecha=${appt.startTime}`);
+
+  await _ghlUpdateLeadAgendado(instagram, nombre, cliente_id).catch(e => {
+    console.warn('[GHL] Lead Agendado update error:', e.message);
+  });
+
+  return data.id;
+}
+
+// POST /webhooks/ghl — receives GHL webhook events
+app.post('/webhooks/ghl', async (req, res) => {
+  try {
+    const webhookToken = req.query.t;
+    const body         = req.body || {};
+    console.log(`[GHL Webhook] token=${webhookToken || 'none'} type=${body.type || '?'} apptId=${body.id || '?'} locationId=${body.locationId || '?'}`);
+
+    // Identify negocio from webhook token
+    let cliente_id = null;
+    if (webhookToken) {
+      const { data: conn } = await supabase
+        .from('calendar_integrations').select('negocio_id')
+        .eq('webhook_token', webhookToken).eq('provider', 'ghl').maybeSingle();
+      if (conn) {
+        cliente_id = conn.negocio_id;
+        console.log(`[GHL Webhook] ✓ Negocio by token → cliente_id=${cliente_id}`);
+      }
+    }
+
+    // Fallback: identify by locationId in payload
+    if (!cliente_id && body.locationId) {
+      const { data: conn } = await supabase
+        .from('calendar_integrations').select('negocio_id')
+        .eq('provider_location_id', body.locationId).eq('provider', 'ghl').maybeSingle();
+      if (conn) {
+        cliente_id = conn.negocio_id;
+        console.log(`[GHL Webhook] ✓ Negocio by locationId → cliente_id=${cliente_id}`);
+      }
+    }
+
+    if (!cliente_id) {
+      console.warn(`[GHL Webhook] ❌ Could not identify negocio — token=${webhookToken || 'none'} locationId=${body.locationId || 'none'}`);
+      _logGhlWebhook({ eventType: body.type, status: 'no_mapping' });
+      return res.json({ ok: true, warning: 'No mapping found — event logged but no call created' });
+    }
+
+    const eventType     = body.type;
+    const appointmentId = body.id;
+    const contactId     = body.contactId;
+
+    if (!eventType) {
+      return res.status(400).json({ error: 'Missing event type' });
+    }
+
+    if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'].includes(eventType)) {
+      console.log(`[GHL Webhook] Unhandled event type: ${eventType}`);
+      return res.json({ ok: true, info: `Unhandled: ${eventType}` });
+    }
+
+    _logGhlWebhook({ eventType, appointmentId, contactId, cliente_id, status: 'processing' });
+
+    // AppointmentDelete: just mark existing call as Cancelada
+    if (eventType === 'AppointmentDelete') {
+      if (appointmentId) {
+        const { data: updated, error } = await supabase.from('calls')
+          .update({ estado: 'Cancelada' })
+          .eq('cliente_id', cliente_id).eq('provider_event_id', appointmentId).select('id');
+        if (error) console.warn('[GHL Webhook] ⚠ Delete update error:', error.message);
+        else console.log(`[GHL Webhook] ✓ AppointmentDelete → Cancelada rows=${updated?.length || 0}`);
+      }
+      _logGhlWebhook({ eventType, appointmentId, cliente_id, status: 'deleted' });
+      return res.json({ ok: true });
+    }
+
+    // Get fresh token for API calls
+    const conn = await _getGhlToken(cliente_id);
+    if (!conn) {
+      console.warn(`[GHL Webhook] No GHL connection found for negocio=${cliente_id}`);
+      _logGhlWebhook({ eventType, appointmentId, cliente_id, status: 'no_connection' });
+      return res.json({ ok: true, warning: 'No GHL connection found' });
+    }
+
+    // Fetch full contact details
+    let contact = {};
+    if (contactId) {
+      try {
+        contact = await _ghlProvider.getContact(conn.access_token, contactId);
+        console.log(`[GHL Webhook] Contact fetched: "${[contact.firstName, contact.lastName].filter(Boolean).join(' ')}" email=${contact.email || '—'}`);
+      } catch (e) {
+        console.warn(`[GHL Webhook] Could not fetch contact ${contactId}:`, e.message);
+        // Build minimal contact from webhook payload fields
+        contact = {
+          id:        contactId,
+          firstName: body.firstName || body.name || '',
+          lastName:  body.lastName  || '',
+          email:     body.email     || '',
+          phone:     body.phone     || '',
+        };
+      }
+    }
+
+    const callId = await _ghlUpsertCall(body, contact, cliente_id, eventType);
+    _logGhlWebhook({ eventType, appointmentId, contactId, cliente_id, callId, status: eventType === 'AppointmentUpdate' ? 'updated' : 'created' });
+
+    res.json({ ok: true, call_id: callId });
+  } catch (err) {
+    console.error('[GHL Error] Webhook handler failed:', err.message, err.stack?.split('\n')[1] || '');
+    _logGhlWebhook({ eventType: req.body?.type, status: 'error', error: err.message });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /ghl/connect?cliente_id=X — redirect to GHL OAuth authorization
+app.get('/ghl/connect', (req, res) => {
+  const { cliente_id } = req.query;
+  if (!cliente_id)                   return res.status(400).send('Missing cliente_id');
+  if (!process.env.GHL_CLIENT_ID)    return res.status(503).send('GHL_CLIENT_ID not configured');
+
+  const backendUrl  = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+  const redirectUri = `${backendUrl}/ghl/callback`;
+  const state       = Buffer.from(JSON.stringify({ cliente_id, nonce: require('crypto').randomBytes(8).toString('hex') })).toString('base64url');
+
+  const authUrl = _ghlProvider.buildOAuthURL(redirectUri, state);
+  console.log(`[GHL OAuth] Redirecting negocio=${cliente_id} to GHL auth`);
+  res.redirect(authUrl);
+});
+
+// GET /ghl/callback — OAuth callback from GHL
+app.get('/ghl/callback', async (req, res) => {
+  const { code, state, error: oauthError } = req.query;
+
+  if (oauthError) {
+    console.warn('[GHL OAuth] User denied access:', oauthError);
+    return res.send(_ghlPopupPage(false, null, `Acceso denegado: ${oauthError}`));
+  }
+  if (!code || !state) return res.status(400).send('Missing code or state');
+
+  let cliente_id;
+  try {
+    const decoded = JSON.parse(Buffer.from(state, 'base64url').toString());
+    cliente_id    = decoded.cliente_id;
+    if (!cliente_id) throw new Error('No cliente_id in state');
+  } catch (err) {
+    return res.status(400).send('Invalid state parameter');
+  }
+
+  try {
+    const backendUrl  = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+    const redirectUri = `${backendUrl}/ghl/callback`;
+
+    console.log(`[GHL OAuth] Exchanging code for tokens — negocio=${cliente_id}`);
+    const tokens     = await _ghlProvider.exchangeCode(code, redirectUri);
+    const expiresAt  = new Date(Date.now() + (tokens.expires_in || 86400) * 1000).toISOString();
+    const locationId = tokens.locationId || null;
+    const userId     = tokens.userId     || null;
+
+    console.log(`[GHL OAuth] Tokens received — locationId=${locationId} userId=${userId}`);
+
+    // Fetch location name for display
+    let locationName = null;
+    if (locationId && tokens.access_token) {
+      try {
+        const loc  = await _ghlProvider.getLocation(tokens.access_token, locationId);
+        locationName = loc?.name || null;
+        console.log(`[GHL OAuth] Location name: "${locationName}"`);
+      } catch (e) { console.warn('[GHL OAuth] Could not fetch location:', e.message); }
+    }
+
+    // Generate per-negocio webhook token for URL-based identification
+    const webhookToken = _ghlProvider.generateWebhookToken();
+    const webhookUrl   = `${backendUrl}/webhooks/ghl?t=${webhookToken}`;
+
+    // Remove old webhook subscription if any
+    const { data: existing } = await supabase.from('calendar_integrations')
+      .select('webhook_id, access_token').eq('negocio_id', cliente_id).eq('provider', 'ghl').maybeSingle();
+    if (existing?.webhook_id && existing?.access_token) {
+      try {
+        await _ghlProvider.deleteWebhookSubscription(existing.access_token, existing.webhook_id);
+        console.log(`[GHL OAuth] Deleted old webhook ${existing.webhook_id}`);
+      } catch (e) { console.warn('[GHL OAuth] Could not delete old webhook:', e.message); }
+    }
+
+    // Create new webhook subscription
+    let webhookId = null;
+    if (locationId) {
+      try {
+        const wh = await _ghlProvider.createWebhookSubscription(tokens.access_token, locationId, webhookUrl);
+        webhookId = wh?.id || wh?.webhookId || null;
+        console.log(`[GHL OAuth] Webhook created: ${webhookId} → ${webhookUrl}`);
+      } catch (e) {
+        console.warn('[GHL OAuth] Webhook creation warning:', e.message, '— saved connection without webhook. Set webhook manually in GHL dashboard to:', webhookUrl);
+      }
+    }
+
+    // Upsert into calendar_integrations
+    const connRow = {
+      negocio_id:           cliente_id,
+      provider:             'ghl',
+      access_token:         tokens.access_token,
+      refresh_token:        tokens.refresh_token  || null,
+      token_expires_at:     expiresAt,
+      provider_user_id:     userId,
+      provider_location_id: locationId,
+      webhook_id:           webhookId,
+      webhook_token:        webhookToken,
+      webhook_url:          webhookUrl,
+      metadata:             JSON.stringify({ locationName }),
+      connected_at:         new Date().toISOString(),
+      status:               'connected',
+      updated_at:           new Date().toISOString(),
+    };
+
+    const { error: upsertErr } = await supabase
+      .from('calendar_integrations').upsert(connRow, { onConflict: 'negocio_id' });
+    if (upsertErr) throw new Error(`DB upsert failed: ${upsertErr.message}`);
+
+    console.log(`[GHL OAuth] ✓ Connection saved — negocio=${cliente_id} location=${locationId}`);
+    res.send(_ghlPopupPage(true, cliente_id, null));
+
+  } catch (err) {
+    console.error('[GHL OAuth] Callback error:', err.message);
+    res.send(_ghlPopupPage(false, cliente_id, err.message));
+  }
+});
+
+function _ghlPopupPage(success, cliente_id, errorMsg) {
+  const msg = success
+    ? `{type:'ghl_connected', cliente_id:${JSON.stringify(cliente_id)}}`
+    : `{type:'ghl_error', error:${JSON.stringify(errorMsg || 'Unknown error')}}`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>body{font-family:sans-serif;background:#0d0e12;color:#9ba0b4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}</style>
+</head><body>
+<div style="text-align:center">
+  <div style="font-size:32px;margin-bottom:12px">${success ? '✅' : '❌'}</div>
+  <div style="font-size:14px">${success ? 'GoHighLevel conectado. Cerrando...' : 'Error: ' + (errorMsg || '')}</div>
+</div>
+<script>
+  try { window.opener && window.opener.postMessage(${msg}, '*'); } catch(e) {}
+  setTimeout(() => window.close(), 1500);
+</script>
+</body></html>`;
+}
+
+// GET /ghl/connection-status — connection info for the current negocio
+app.get('/ghl/connection-status', validateAccess, async (req, res) => {
+  const { data, error } = await supabase
+    .from('calendar_integrations')
+    .select('negocio_id, provider, provider_location_id, webhook_url, connected_at, status, metadata')
+    .eq('negocio_id', req.cliente_id).eq('provider', 'ghl').maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || null);
+});
+
+// DELETE /ghl/disconnect — disconnect GHL from the current negocio
+app.delete('/ghl/disconnect', validateAccess, async (req, res) => {
+  try {
+    const conn = await _getGhlToken(req.cliente_id);
+    if (!conn) return res.json({ ok: true, info: 'No connection found' });
+
+    if (conn.webhook_id) {
+      try {
+        await _ghlProvider.deleteWebhookSubscription(conn.access_token, conn.webhook_id);
+        console.log(`[GHL OAuth] Webhook deleted for negocio=${req.cliente_id}`);
+      } catch (e) { console.warn('[GHL OAuth] Could not delete webhook on GHL:', e.message); }
+    }
+
+    await supabase.from('calendar_integrations').delete()
+      .eq('negocio_id', req.cliente_id).eq('provider', 'ghl');
+    console.log(`[GHL OAuth] Disconnected negocio=${req.cliente_id}`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /integration/provider — returns which calendar provider this negocio uses + connection status
+// Used by the frontend "Integraciones" page
+app.get('/integration/provider', validateAccess, async (req, res) => {
+  const provider = _getCalendarProvider(req.cliente_id);
+  let connected  = false;
+  let info       = null;
+
+  if (provider === 'ghl') {
+    const { data } = await supabase
+      .from('calendar_integrations')
+      .select('connected_at, status, metadata, provider_location_id, webhook_url')
+      .eq('negocio_id', req.cliente_id).eq('provider', 'ghl').maybeSingle();
+    connected = !!(data && data.status === 'connected');
+    info      = data;
+  } else {
+    const { data } = await supabase
+      .from('calendly_connections')
+      .select('connected_at, calendly_user_name, calendly_user_email, webhook_uri')
+      .eq('negocio_id', req.cliente_id).maybeSingle();
+    connected = !!data;
+    info      = data;
+  }
+
+  res.json({ provider, connected, info });
+});
+
+// GET /ghl/debug — GHL pipeline debug (holding-only)
+app.get('/ghl/debug', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+  try {
+    const [connsRes, callsRes] = await Promise.all([
+      supabase.from('calendar_integrations')
+        .select('negocio_id, provider, provider_location_id, connected_at, status')
+        .order('connected_at', { ascending: false }),
+      supabase.from('calls')
+        .select('id, nombre, email, estado, origen, cliente_id, fecha_llamada, provider_event_id, created_at')
+        .eq('origen', 'GHL')
+        .order('created_at', { ascending: false }).limit(20),
+    ]);
+    res.json({
+      connections:     connsRes.data || [],
+      recent_webhooks: _ghlWebhookLog,
+      recent_calls:    callsRes.data  || [],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
