@@ -641,6 +641,9 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       case 'No asistió':
         nuevoEstadoLead = 'No Show';
         break;
+      case 'Cancelada':
+        nuevoEstadoLead = 'No Show';
+        break;
     }
 
     if (nuevoEstadoLead) {
@@ -1030,7 +1033,7 @@ app.get('/metrics', async (req, res) => {
       const closes         = l.filter(x => x.estado === 'Cerrado' || x.estado === 'Seña').length;
       const senas          = l.filter(x => x.estado === 'Seña').length;
       const totalCalls     = c.length;
-      const shows          = c.filter(x => x.estado !== 'No asistió' && x.estado !== 'Re agenda' && x.estado !== 'Pendiente').length;
+      const shows          = c.filter(x => !['No asistió','Cancelada','Re agenda','Pendiente'].includes(x.estado)).length;
       const facturacion    = cl.reduce((s, x) => s + (parseFloat(x.cash_collected) || 0), 0);
       const cash_collected = facturacion;
       const aov            = closes > 0 ? Math.round(facturacion / closes) : 0;
@@ -3473,7 +3476,7 @@ app.post('/reports/weekly/generate', validateAccess, async (req, res) => {
     const facturacion    = ingCur.filter(i => i.concepto === 'Venta Nueva').reduce((s, i) => s + (Number(i.usd) || 0), 0);
     const cashCollected  = cliCur.reduce((s, c) => s + (Number(c.cash_collected) || 0), 0);
     const egresoTotal    = egresosCur.reduce((s, e) => s + (Number(e.usd) || 0), 0);
-    const showsCount     = callsCur.filter(c => !['No asistió', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
+    const showsCount     = callsCur.filter(c => !['No asistió', 'Cancelada', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
     const aov            = cerradosNow.length > 0 ? Math.round(facturacion / cerradosNow.length) : 0;
     const seguidoresNow  = leadsNow.filter(_isSegNuevo).length;
     const orgLeadsNow    = leadsNow.length - seguidoresNow;
@@ -4417,12 +4420,12 @@ app.post('/webhooks/calendly', async (req, res) => {
         _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'reschedule_cancel_skipped', name: inv.name, email: inv.email });
       } else {
         const { data: updated, error } = await supabase.from('calls')
-          .update({ estado: 'No asistió' })
+          .update({ estado: 'Cancelada' })
           .eq('cliente_id', cliente_id)
           .eq('calendly_invitee_uri', inv.uri)
           .select('id');
         if (error) console.warn('[Calendly Webhook] ⚠ Cancel update error:', error.message);
-        else console.log(`[Calendly Webhook] ✓ invitee.canceled → "No asistió" rows=${updated?.length || 0} uri=${inv.uri}`);
+        else console.log(`[Calendly Webhook] ✓ invitee.canceled → "Cancelada" rows=${updated?.length || 0} uri=${inv.uri}`);
         _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'canceled', name: inv.name, email: inv.email });
       }
 
