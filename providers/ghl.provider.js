@@ -251,7 +251,9 @@ function extractInstagram(contact, rawPayload) {
   return '';
 }
 
-// Metadata keys to exclude — GHL system fields that are NOT form answers
+// Metadata keys to exclude — GHL system fields that are NOT form answers.
+// Match is done on the ORIGINAL key (lowercased only), NOT after stripping punctuation,
+// so Spanish question strings like "¿Cuál es tu presupuesto?" are never accidentally excluded.
 const _QUAL_EXCLUDED_KEYS = new Set([
   // contact identity
   'contact_id', 'contactid', 'first_name', 'firstname', 'last_name', 'lastname',
@@ -259,7 +261,7 @@ const _QUAL_EXCLUDED_KEYS = new Set([
   'country', 'timezone', 'date_created', 'datecreated',
   'contact_source', 'contactsource', 'full_address', 'fulladdress',
   'contact_type', 'contacttype',
-  // nested GHL objects (values are objects, not strings — skipped anyway, but exclude explicitly)
+  // nested GHL objects (values are objects/arrays — already skipped by strVal check, but listed for clarity)
   'location', 'user', 'calendar', 'workflow', 'triggerdata', 'customdata',
   'attributionsource', 'attribution_source', 'contact',
   // technical ids & timestamps
@@ -270,11 +272,18 @@ const _QUAL_EXCLUDED_KEYS = new Set([
   // event routing
   'type', 'event', 'source',
 ]);
+// Only test these patterns on the LOWERCASED original key — no stripping applied.
 const _QUAL_EXCLUDED_PATTERNS = [
-  /\battribution\b/i, /\butm_/i, /\btracking\b/i,
-  /\bbrowser\b/i, /\bplatform\b/i, /\bip\b/i, /\buser.?agent\b/i,
-  /\bgclid\b/i, /\bfbclid\b/i, /\bwebhook\b/i,
-  /_id$/i, /^id$/i,
+  /^utm_/i,
+  /^attribution/i,
+  /fbclid/i,
+  /gclid/i,
+  /\bwebhook\b/i,
+  /\btracking\b/i,
+  /\bbrowser\b/i,
+  /\buser.?agent\b/i,
+  /^ip$/i,
+  /\bplatform\b/i,
 ];
 
 // Extract human-readable qualification answers from a GHL workflow payload.
@@ -284,9 +293,11 @@ function extractQualificationAnswers(rawPayload) {
   if (!rawPayload) return {};
   const answers = {};
 
+  // Exclusion check uses LOWERCASED original key — no punctuation stripping so Spanish
+  // question strings with ¿ ? spaces are never accidentally matched to a system key.
   const _exclude = (key) => {
-    const kl = key.toLowerCase().replace(/[\s¿?]/g, '').replace(/[^a-z0-9_]/g, '');
-    return _QUAL_EXCLUDED_KEYS.has(kl) || _QUAL_EXCLUDED_PATTERNS.some(p => p.test(key));
+    const kl = key.toLowerCase();
+    return _QUAL_EXCLUDED_KEYS.has(kl) || _QUAL_EXCLUDED_PATTERNS.some(p => p.test(kl));
   };
 
   // 1. Scan TOP-LEVEL body keys — this is where GHL workflow sends form answers

@@ -4815,11 +4815,19 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
 
   const apptId = appt.appointmentId || appt.id || null;
 
+  // Extract qualification answers early so they're available for both UPDATE and INSERT
+  const qualAnswers  = _ghlProvider.extractQualificationAnswers(rawPayload);
+  const answerCount  = Object.keys(qualAnswers).length;
+  console.log(`[GHL Parser] qualification answers extracted=${answerCount}`);
+  if (answerCount > 0) console.log(`[GHL Parser] qualification keys: ${Object.keys(qualAnswers).join(' | ')}`);
+  const preguntasCalificacion = answerCount > 0 ? JSON.stringify(qualAnswers) : null;
+
   console.log(`[GHL UpsertCall] nombre="${nombre}" email=${email} phone=${telefono} apptId=${apptId} estado=${estado} startTime=${appt.startTime || '—'}`);
 
   // Try to find existing call by provider_event_id
   if (apptId) {
-    const { data: existing, error: lookupErr } = await supabase.from('calls').select('id, estado, fecha_llamada')
+    const { data: existing, error: lookupErr } = await supabase.from('calls')
+      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion')
       .eq('cliente_id', cliente_id).eq('provider_event_id', apptId).maybeSingle();
     if (lookupErr) console.warn(`[GHL UpsertCall] Lookup error: ${lookupErr.message}`);
 
@@ -4829,6 +4837,15 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
         fecha_llamada: appt.startTime || null,
         estado:        isDelete ? 'Cancelada' : estado,
         ...(meetingLink && { link_llamada: meetingLink }),
+        // Enrich: only overwrite if new value is non-empty, otherwise keep existing
+        ...(nombre && nombre !== 'Sin nombre'           && { nombre }),
+        ...(instagram || existing.instagram             ? { instagram: instagram || existing.instagram } : {}),
+        ...(telefono                                    && { whatsapp: telefono }),
+        ...(email                                       && { email }),
+        ...(preguntasCalificacion || existing.preguntas_calificacion
+          ? { preguntas_calificacion: preguntasCalificacion || existing.preguntas_calificacion } : {}),
+        ...(apptId                                      && { provider_event_id: apptId }),
+        ...((appt.title || appt.calendarTitle)          && { calendar_name: appt.title || appt.calendarTitle }),
       };
       if (isUpdate && appt.startTime && appt.startTime !== existing.fecha_llamada) {
         updatePatch.reagendada = true;
@@ -4865,13 +4882,6 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
       .eq('instagram', instagram).eq('cliente_id', cliente_id);
     numero_llamada = (prev?.length || 0) + 1;
   }
-
-  // Extract only human-readable form answers (strips tracking/metadata noise)
-  const qualAnswers = _ghlProvider.extractQualificationAnswers(rawPayload);
-  const answerCount = Object.keys(qualAnswers).length;
-  console.log(`[GHL Parser] qualification answers extracted=${answerCount}`);
-  if (answerCount > 0) console.log(`[GHL Parser] qualification payload saved`);
-  const preguntasCalificacion = answerCount > 0 ? JSON.stringify(qualAnswers) : null;
 
   const fullRow = {
     cliente_id,
