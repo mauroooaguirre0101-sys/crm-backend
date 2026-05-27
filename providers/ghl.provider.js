@@ -20,7 +20,7 @@ async function _apiCall(method, path, body, accessToken) {
   const res  = await fetch(`${GHL_API}${path}`, opts);
   if (res.status === 204) return null;
   const data = await res.json();
-  if (!res.ok) throw new Error(`GHL ${method} ${path} [${res.status}]: ${JSON.stringify(data).slice(0, 300)}`);
+  if (!res.ok) throw new Error(`GHL ${method} ${path} [${res.status}]: ${JSON.stringify(data).slice(0, 400)}`);
   return data;
 }
 
@@ -35,10 +35,11 @@ async function _tokenCall(params) {
       ...params,
       client_id:     process.env.GHL_CLIENT_ID,
       client_secret: process.env.GHL_CLIENT_SECRET,
+      user_type:     'Location',   // required by GHL for location-scoped tokens
     }).toString(),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(`GHL token [${res.status}]: ${JSON.stringify(data).slice(0, 300)}`);
+  if (!res.ok) throw new Error(`GHL token [${res.status}]: ${JSON.stringify(data).slice(0, 400)}`);
   return data;
 }
 
@@ -50,8 +51,14 @@ function buildOAuthURL(redirectUri, state) {
     response_type: 'code',
     redirect_uri:  redirectUri,
     client_id:     process.env.GHL_CLIENT_ID || '',
-    scope:         'contacts.readonly calendars.readonly locations.readonly',
-    state:         typeof state === 'string' ? state : JSON.stringify(state),
+    // Scopes GHL v2 requires for contacts, calendars and locations
+    scope: [
+      'contacts.readonly',
+      'calendars.readonly',
+      'calendars/appointments.readonly',
+      'locations.readonly',
+    ].join(' '),
+    state: typeof state === 'string' ? state : JSON.stringify(state),
   });
   return `${GHL_AUTH}/oauth/chooselocation?${q}`;
 }
@@ -72,7 +79,7 @@ async function getLocation(accessToken, locationId) {
   return data?.location || data;
 }
 
-// Get a contact by ID
+// Get a contact by ID — locationId is implicit from the token scope
 async function getContact(accessToken, contactId) {
   const data = await _apiCall('GET', `/contacts/${contactId}`, null, accessToken);
   return data?.contact || data;
@@ -85,8 +92,9 @@ async function getAppointment(accessToken, appointmentId) {
 }
 
 // Create a webhook subscription for appointment events
+// GHL v2: POST /webhooks (no trailing slash), locationId in body
 async function createWebhookSubscription(accessToken, locationId, callbackUrl) {
-  const data = await _apiCall('POST', '/webhooks/', {
+  const data = await _apiCall('POST', '/webhooks', {
     name:       'CRM Appointments Sync',
     url:        callbackUrl,
     events:     ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'],
@@ -95,7 +103,7 @@ async function createWebhookSubscription(accessToken, locationId, callbackUrl) {
   return data;
 }
 
-// Delete a webhook subscription
+// Delete a webhook subscription by ID
 async function deleteWebhookSubscription(accessToken, webhookId) {
   try {
     await _apiCall('DELETE', `/webhooks/${webhookId}`, null, accessToken);
@@ -108,7 +116,7 @@ async function deleteWebhookSubscription(accessToken, webhookId) {
 
 // List webhooks for a location
 async function listWebhooks(accessToken, locationId) {
-  const data = await _apiCall('GET', `/webhooks/?locationId=${encodeURIComponent(locationId)}`, null, accessToken);
+  const data = await _apiCall('GET', `/webhooks?locationId=${encodeURIComponent(locationId)}`, null, accessToken);
   return data?.webhooks || data || [];
 }
 
@@ -119,7 +127,7 @@ async function ensureFreshToken(conn) {
   const expiresMs = new Date(conn.token_expires_at).getTime();
   if (Date.now() + 5 * 60 * 1000 < expiresMs) return { accessToken: conn.access_token, updated: false };
 
-  const tokens    = await refreshAccessToken(conn.refresh_token);
+  const tokens     = await refreshAccessToken(conn.refresh_token);
   const newExpires = new Date(Date.now() + (tokens.expires_in || 86400) * 1000).toISOString();
   return {
     accessToken: tokens.access_token,
@@ -134,17 +142,56 @@ function generateWebhookToken() {
   return crypto.randomBytes(24).toString('hex');
 }
 
-// Extract instagram handle from a GHL contact's custom fields
+// Normalize GHL webhook payload — handles field name variations across GHL versions
+// GHL v2 uses camelCase; some older/workflow webhooks use snake_case or nested objects
+function normalizeWebhookPayload(body) {
+  // Event type — GHL v2: "AppointmentCreate"; v1/workflow: "appointment_created"
+  const type = body.type
+    || (body.event && _normalizeEventType(body.event))
+    || null;
+
+  // Appointment ID — multiple possible locations
+  const appointmentId = body.id
+    || body.appointmentId
+    || body.appointment_id
+    || body.resourceId
+    || null;
+
+  // Contact ID — multiple possible locations
+  const contactId = body.contactId
+    || body.contact_id
+    || (body.contact && (body.contact.id || body.contact._id))
+    || null;
+
+  const locationId = body.locationId || body.location_id || null;
+
+  return { type, appointmentId, contactId, locationId, raw: body };
+}
+
+function _normalizeEventType(event) {
+  const map = {
+    'appointment_created': 'AppointmentCreate',
+    'appointment_updated': 'AppointmentUpdate',
+    'appointment_deleted': 'AppointmentDelete',
+  };
+  return map[event?.toLowerCase()] || event;
+}
+
+// Extract instagram handle from a GHL contact's custom fields or notes
 function extractInstagram(contact) {
   if (!contact) return '';
   const customFields = contact.customField || contact.customFields || [];
   for (const cf of customFields) {
-    const key = (cf.id || cf.key || cf.name || cf.fieldKey || '').toLowerCase();
+    const key = String(cf.id || cf.key || cf.name || cf.fieldKey || '').toLowerCase();
     const val = String(cf.value || '').trim();
     if (val && (key.includes('instagram') || key === 'ig' || key.startsWith('ig_'))) {
       return val.replace(/^@/, '').replace(/\s+/g, '').toLowerCase();
     }
   }
+  // Fallback: search notes for @handle pattern
+  const notes = String(contact.notes || '');
+  const match = notes.match(/@([\w.]+)/);
+  if (match) return match[1].toLowerCase();
   return '';
 }
 
@@ -170,6 +217,7 @@ module.exports = {
   listWebhooks,
   ensureFreshToken,
   generateWebhookToken,
+  normalizeWebhookPayload,
   extractInstagram,
   mapAppointmentStatus,
 };

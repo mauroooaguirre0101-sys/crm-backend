@@ -4795,27 +4795,38 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
   const telefono  = contact.phone || '';
   const estado    = _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
 
-  // For Update events, mark reagendada if dates changed
-  const isUpdate  = eventType === 'AppointmentUpdate';
-  const isDelete  = eventType === 'AppointmentDelete';
-
-  // Prefer zoom/meet link in address field; GHL puts the join URL there
+  const isUpdate    = eventType === 'AppointmentUpdate';
+  const isDelete    = eventType === 'AppointmentDelete';
   const meetingLink = (appt.address && appt.address.startsWith('http')) ? appt.address : null;
 
+  // Appointment ID normalised (appt already went through normalizeWebhookPayload)
+  const apptId = appt.appointmentId || appt.id || null;
+
   // Try to find existing call by provider_event_id
-  if (appt.id) {
-    const { data: existing } = await supabase.from('calls').select('id, estado')
-      .eq('cliente_id', cliente_id).eq('provider_event_id', appt.id).maybeSingle();
+  if (apptId) {
+    const { data: existing } = await supabase.from('calls').select('id, estado, fecha_llamada')
+      .eq('cliente_id', cliente_id).eq('provider_event_id', apptId).maybeSingle();
 
     if (existing) {
       const updatePatch = {
         fecha_llamada: appt.startTime || null,
         estado:        isDelete ? 'Cancelada' : estado,
         ...(meetingLink && { link_llamada: meetingLink }),
-        ...(isUpdate    && { reagendada: true }),
       };
-      const { error } = await supabase.from('calls')
+      // Only set reagendada if start time changed (guard against missing column)
+      if (isUpdate && appt.startTime && appt.startTime !== existing.fecha_llamada) {
+        updatePatch.reagendada = true;
+      }
+
+      let { error } = await supabase.from('calls')
         .update(updatePatch).eq('id', existing.id).eq('cliente_id', cliente_id);
+
+      if (error && error.message?.includes('reagendada')) {
+        // reagendada column not yet migrated — retry without it
+        delete updatePatch.reagendada;
+        ({ error } = await supabase.from('calls')
+          .update(updatePatch).eq('id', existing.id).eq('cliente_id', cliente_id));
+      }
       if (error) throw new Error(`[GHL] Update call failed: ${error.message}`);
       console.log(`[GHL] ✓ Updated call id=${existing.id} event=${eventType} estado=${updatePatch.estado}`);
       return existing.id;
@@ -4823,7 +4834,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
   }
 
   if (isDelete) {
-    console.log(`[GHL] AppointmentDelete — no existing call found for appt.id=${appt.id}, skipping`);
+    console.log(`[GHL] AppointmentDelete — no existing call found for apptId=${apptId}, skipping`);
     return null;
   }
 
@@ -4846,10 +4857,10 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
     numero_llamada,
     seguimientos:      0,
     responde:          false,
-    fecha_llamada:     appt.startTime    || null,
-    link_llamada:      meetingLink       || null,
-    provider_event_id: appt.id          || null,
-    calendar_name:     appt.title       || null,
+    fecha_llamada:     appt.startTime  || null,
+    link_llamada:      meetingLink     || null,
+    provider_event_id: apptId         || null,
+    calendar_name:     appt.title     || appt.calendarTitle || null,
   };
 
   let { data, error } = await supabase.from('calls').insert(fullRow).select('id').single();
@@ -4878,10 +4889,16 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType) {
 app.post('/webhooks/ghl', async (req, res) => {
   try {
     const webhookToken = req.query.t;
-    const body         = req.body || {};
-    console.log(`[GHL Webhook] token=${webhookToken || 'none'} type=${body.type || '?'} apptId=${body.id || '?'} locationId=${body.locationId || '?'}`);
+    const rawBody      = req.body || {};
 
-    // Identify negocio from webhook token
+    // Normalize payload — handles GHL v1/v2/workflow field name variations
+    const { type: eventType, appointmentId, contactId, locationId } =
+      _ghlProvider.normalizeWebhookPayload(rawBody);
+
+    console.log(`[GHL Webhook] token=${webhookToken || 'none'} type=${eventType || '?'} apptId=${appointmentId || '?'} contactId=${contactId || '?'} locationId=${locationId || '?'}`);
+    console.log(`[GHL Webhook] raw keys: ${Object.keys(rawBody).join(', ')}`);
+
+    // Identify negocio from webhook token (?t=TOKEN in URL)
     let cliente_id = null;
     if (webhookToken) {
       const { data: conn } = await supabase
@@ -4894,79 +4911,80 @@ app.post('/webhooks/ghl', async (req, res) => {
     }
 
     // Fallback: identify by locationId in payload
-    if (!cliente_id && body.locationId) {
+    if (!cliente_id && locationId) {
       const { data: conn } = await supabase
         .from('calendar_integrations').select('negocio_id')
-        .eq('provider_location_id', body.locationId).eq('provider', 'ghl').maybeSingle();
+        .eq('provider_location_id', locationId).eq('provider', 'ghl').maybeSingle();
       if (conn) {
         cliente_id = conn.negocio_id;
-        console.log(`[GHL Webhook] ✓ Negocio by locationId → cliente_id=${cliente_id}`);
+        console.log(`[GHL Webhook] ✓ Negocio by locationId=${locationId} → cliente_id=${cliente_id}`);
       }
     }
 
     if (!cliente_id) {
-      console.warn(`[GHL Webhook] ❌ Could not identify negocio — token=${webhookToken || 'none'} locationId=${body.locationId || 'none'}`);
-      _logGhlWebhook({ eventType: body.type, status: 'no_mapping' });
+      console.warn(`[GHL Webhook] ❌ Could not identify negocio — token=${webhookToken || 'none'} locationId=${locationId || 'none'}`);
+      console.warn(`[GHL Webhook] Full body: ${JSON.stringify(rawBody).slice(0, 400)}`);
+      _logGhlWebhook({ eventType, status: 'no_mapping', locationId });
       return res.json({ ok: true, warning: 'No mapping found — event logged but no call created' });
     }
 
-    const eventType     = body.type;
-    const appointmentId = body.id;
-    const contactId     = body.contactId;
-
     if (!eventType) {
+      console.warn('[GHL Webhook] Missing event type — body:', JSON.stringify(rawBody).slice(0, 200));
       return res.status(400).json({ error: 'Missing event type' });
     }
 
     if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'].includes(eventType)) {
-      console.log(`[GHL Webhook] Unhandled event type: ${eventType}`);
+      console.log(`[GHL Webhook] Skipping unhandled event type: ${eventType}`);
       return res.json({ ok: true, info: `Unhandled: ${eventType}` });
     }
 
     _logGhlWebhook({ eventType, appointmentId, contactId, cliente_id, status: 'processing' });
 
-    // AppointmentDelete: just mark existing call as Cancelada
+    // AppointmentDelete — mark existing call Cancelada without needing API token
     if (eventType === 'AppointmentDelete') {
       if (appointmentId) {
         const { data: updated, error } = await supabase.from('calls')
           .update({ estado: 'Cancelada' })
           .eq('cliente_id', cliente_id).eq('provider_event_id', appointmentId).select('id');
         if (error) console.warn('[GHL Webhook] ⚠ Delete update error:', error.message);
-        else console.log(`[GHL Webhook] ✓ AppointmentDelete → Cancelada rows=${updated?.length || 0}`);
+        else console.log(`[GHL Webhook] ✓ AppointmentDelete → Cancelada rows=${updated?.length || 0} apptId=${appointmentId}`);
       }
       _logGhlWebhook({ eventType, appointmentId, cliente_id, status: 'deleted' });
       return res.json({ ok: true });
     }
 
-    // Get fresh token for API calls
+    // For Create/Update, get a fresh token to call GHL API
     const conn = await _getGhlToken(cliente_id);
     if (!conn) {
       console.warn(`[GHL Webhook] No GHL connection found for negocio=${cliente_id}`);
       _logGhlWebhook({ eventType, appointmentId, cliente_id, status: 'no_connection' });
-      return res.json({ ok: true, warning: 'No GHL connection found' });
+      return res.json({ ok: true, warning: 'No GHL connection — reconnect from Holding → Integraciones' });
     }
 
-    // Fetch full contact details
+    // Fetch full contact details from GHL API
     let contact = {};
     if (contactId) {
       try {
         contact = await _ghlProvider.getContact(conn.access_token, contactId);
-        console.log(`[GHL Webhook] Contact fetched: "${[contact.firstName, contact.lastName].filter(Boolean).join(' ')}" email=${contact.email || '—'}`);
+        console.log(`[GHL Webhook] Contact: "${[contact.firstName, contact.lastName].filter(Boolean).join(' ')}" email=${contact.email || '—'} phone=${contact.phone || '—'}`);
       } catch (e) {
-        console.warn(`[GHL Webhook] Could not fetch contact ${contactId}:`, e.message);
-        // Build minimal contact from webhook payload fields
+        console.warn(`[GHL Webhook] Could not fetch contact id=${contactId}: ${e.message} — using payload fields`);
         contact = {
           id:        contactId,
-          firstName: body.firstName || body.name || '',
-          lastName:  body.lastName  || '',
-          email:     body.email     || '',
-          phone:     body.phone     || '',
+          firstName: rawBody.firstName || rawBody.name || '',
+          lastName:  rawBody.lastName  || '',
+          email:     rawBody.email     || '',
+          phone:     rawBody.phone     || '',
         };
       }
     }
 
-    const callId = await _ghlUpsertCall(body, contact, cliente_id, eventType);
-    _logGhlWebhook({ eventType, appointmentId, contactId, cliente_id, callId, status: eventType === 'AppointmentUpdate' ? 'updated' : 'created' });
+    // Merge normalized ID back into the payload object before upsert
+    const apptPayload = { ...rawBody, appointmentId, id: appointmentId };
+
+    const callId = await _ghlUpsertCall(apptPayload, contact, cliente_id, eventType);
+    _logGhlWebhook({ eventType, appointmentId, contactId, cliente_id, callId,
+      status: eventType === 'AppointmentUpdate' ? 'updated' : 'created' });
 
     res.json({ ok: true, call_id: callId });
   } catch (err) {
@@ -5052,9 +5070,12 @@ app.get('/oauth/callback', async (req, res) => {
       try {
         const wh = await _ghlProvider.createWebhookSubscription(tokens.access_token, locationId, webhookUrl);
         webhookId = wh?.id || wh?.webhookId || null;
-        console.log(`[GHL OAuth] Webhook created: ${webhookId} → ${webhookUrl}`);
+        console.log(`[GHL OAuth] ✓ Webhook auto-created id=${webhookId} → ${webhookUrl}`);
       } catch (e) {
-        console.warn('[GHL OAuth] Webhook creation warning:', e.message, '— saved connection without webhook. Set webhook manually in GHL dashboard to:', webhookUrl);
+        console.warn('[GHL OAuth] ⚠ Webhook auto-creation failed:', e.message);
+        console.warn(`[GHL OAuth] ▶ Set webhook MANUALLY in GHL → Sub-account → Settings → Integrations → Webhooks`);
+        console.warn(`[GHL OAuth] ▶ Webhook URL to paste: ${webhookUrl}`);
+        console.warn(`[GHL OAuth] ▶ Events to select: AppointmentCreate, AppointmentUpdate, AppointmentDelete`);
       }
     }
 
@@ -5149,7 +5170,7 @@ app.get('/integration/provider', validateAccess, async (req, res) => {
   if (provider === 'ghl') {
     const { data } = await supabase
       .from('calendar_integrations')
-      .select('connected_at, status, metadata, provider_location_id, webhook_url')
+      .select('connected_at, status, metadata, provider_location_id, webhook_url, webhook_id')
       .eq('negocio_id', req.cliente_id).eq('provider', 'ghl').maybeSingle();
     connected = !!(data && data.status === 'connected');
     info      = data;
@@ -5194,6 +5215,20 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log('Server running on port', PORT);
+
+  // GHL integration config check
+  if (process.env.GHL_CLIENT_ID && process.env.GHL_CLIENT_SECRET) {
+    const ghlIds = (process.env.GHL_NEGOCIO_IDS || '').split(',').filter(Boolean);
+    console.log(`[GHL] ✓ Configured — negocios: [${ghlIds.join(', ')}]`);
+    if (!process.env.BACKEND_URL) {
+      console.warn('[GHL] ⚠ BACKEND_URL not set — webhook URLs will use request host. Set BACKEND_URL=https://your-railway-url.railway.app in Railway env vars for reliable webhook registration.');
+    } else {
+      console.log(`[GHL] ✓ BACKEND_URL=${process.env.BACKEND_URL}`);
+    }
+  } else {
+    console.log('[GHL] Not configured (GHL_CLIENT_ID/GHL_CLIENT_SECRET missing — Calendly integration unaffected)');
+  }
+
   _startDiscordGateway();
   _startDiscordScheduler(supabase, process.env.FRONTEND_URL);
 });
