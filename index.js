@@ -570,7 +570,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       link_grabacion,
       reporte,
       info_previa,
-      reporte_ghl,
+      preguntas_calificacion,
       fecha_llamada
     } = req.body;
 
@@ -606,7 +606,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     if (link_grabacion   !== undefined) patch.link_grabacion     = link_grabacion;
     if (reporte          !== undefined) patch.reporte            = reporte;
     if (info_previa      !== undefined) patch.info_previa        = info_previa;
-    if (reporte_ghl      !== undefined) patch.reporte_ghl        = reporte_ghl;
+    if (preguntas_calificacion !== undefined) patch.preguntas_calificacion = preguntas_calificacion;
     if ('fecha_llamada' in req.body)    patch.fecha_llamada      = fecha_llamada || null;
 
     const { error } = await supabase
@@ -4864,32 +4864,29 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     numero_llamada = (prev?.length || 0) + 1;
   }
 
-  // Build reporte_ghl: all form responses + calendar + contact + metadata
-  const reporteGhl = JSON.stringify({
-    calendar:          appt,
-    contact:           contact,
-    customData:        rawPayload.customData        || null,
-    triggerData:       rawPayload.triggerData       || null,
-    attributionSource: rawPayload.attributionSource || null,
-    workflow:          rawPayload.workflow           || null,
-  });
+  // Extract only human-readable form answers (strips tracking/metadata noise)
+  const qualAnswers = _ghlProvider.extractQualificationAnswers(rawPayload);
+  const answerCount = Object.keys(qualAnswers).length;
+  console.log(`[GHL Parser] qualification answers extracted=${answerCount}`);
+  if (answerCount > 0) console.log(`[GHL Parser] qualification payload saved`);
+  const preguntasCalificacion = answerCount > 0 ? JSON.stringify(qualAnswers) : null;
 
   const fullRow = {
     cliente_id,
     nombre,
     instagram,
-    whatsapp:          telefono,
+    whatsapp:               telefono,
     email,
-    origen:            'GHL',
+    origen:                 'GHL',
     estado,
     numero_llamada,
-    seguimientos:      0,
-    responde:          false,
-    fecha_llamada:     appt.startTime  || null,
-    link_llamada:      meetingLink     || null,
-    provider_event_id: apptId         || null,
-    calendar_name:     appt.title     || appt.calendarTitle || null,
-    reporte_ghl:       reporteGhl,
+    seguimientos:           0,
+    responde:               false,
+    fecha_llamada:          appt.startTime  || null,
+    link_llamada:           meetingLink     || null,
+    provider_event_id:      apptId         || null,
+    calendar_name:          appt.title     || appt.calendarTitle || null,
+    preguntas_calificacion: preguntasCalificacion,
   };
 
   console.log(`[GHL UpsertCall] Supabase INSERT calls: ${JSON.stringify(fullRow)}`);

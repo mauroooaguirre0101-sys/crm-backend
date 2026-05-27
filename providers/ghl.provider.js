@@ -193,15 +193,30 @@ function _normalizeEventType(event) {
   return map[event?.toLowerCase()] || event;
 }
 
-// Extract instagram handle from contact fields, customData, triggerData, or notes
-function extractInstagram(contact, rawPayload = {}) {
-  if (!contact) contact = {};
+// Recursively traverse any object looking for a key that matches instagram patterns.
+// Returns { key, value } on first match, or null. Max depth 5 to avoid infinite loops.
+function _deepFindIgValue(obj, depth) {
+  if (!obj || typeof obj !== 'object' || (depth || 0) > 5) return null;
+  for (const [key, val] of Object.entries(obj)) {
+    const kl = String(key).toLowerCase();
+    const isIgKey = kl.includes('instagram') || kl.includes('insta')
+      || kl === 'ig' || kl.startsWith('ig_')
+      || kl.includes('@') || kl.includes('usuario');
+    if (isIgKey && val && typeof val === 'string' && val.trim()) {
+      return { key, value: val.trim() };
+    }
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const found = _deepFindIgValue(val, (depth || 0) + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
 
-  const _isIgKey = (k) => {
-    const kl = String(k).toLowerCase();
-    return kl.includes('instagram') || kl === 'ig' || kl.startsWith('ig_')
-      || kl.includes(' ig') || kl.includes('@') || kl.includes('usuario');
-  };
+// Extract instagram handle — searches contact fields, then recursively scans entire rawPayload
+function extractInstagram(contact, rawPayload) {
+  if (!contact)    contact    = {};
+  if (!rawPayload) rawPayload = {};
   const _clean = (v) => String(v).replace(/^@/, '').replace(/\s+/g, '').toLowerCase().trim();
 
   // 1. contact.customField / customFields array (OAuth / GHL API format)
@@ -209,19 +224,23 @@ function extractInstagram(contact, rawPayload = {}) {
   for (const cf of customFields) {
     const key = String(cf.id || cf.key || cf.name || cf.fieldKey || '').toLowerCase();
     const val = String(cf.value || '').trim();
-    if (val && _isIgKey(key)) return _clean(val);
+    const isIgKey = key.includes('instagram') || key.includes('insta') || key === 'ig'
+      || key.startsWith('ig_') || key.includes('@') || key.includes('usuario');
+    if (val && isIgKey) return _clean(val);
   }
 
-  // 2. customData flat object (GHL workflow format — "¿Cuál es tu Instagram?": "handle")
-  const customData = rawPayload.customData || contact.customData || {};
-  for (const [key, val] of Object.entries(customData)) {
-    if (val && _isIgKey(key)) return _clean(String(val));
+  // 2. Deep recursive scan of rawPayload (catches customData, triggerData, nested objects)
+  const foundInPayload = _deepFindIgValue(rawPayload);
+  if (foundInPayload) {
+    console.log(`[GHL Parser] candidate instagram key="${foundInPayload.key}" value="${foundInPayload.value}"`);
+    return _clean(foundInPayload.value);
   }
 
-  // 3. triggerData flat object
-  const triggerData = rawPayload.triggerData || contact.triggerData || {};
-  for (const [key, val] of Object.entries(triggerData)) {
-    if (val && typeof val === 'string' && _isIgKey(key)) return _clean(val);
+  // 3. Deep recursive scan of contact object
+  const foundInContact = _deepFindIgValue(contact);
+  if (foundInContact) {
+    console.log(`[GHL Parser] candidate instagram key="${foundInContact.key}" value="${foundInContact.value}"`);
+    return _clean(foundInContact.value);
   }
 
   // 4. Fallback: search notes for @handle pattern
@@ -230,6 +249,45 @@ function extractInstagram(contact, rawPayload = {}) {
   if (match) return match[1].toLowerCase();
 
   return '';
+}
+
+// Keys and patterns excluded from qualification answers (technical/metadata noise)
+const _QUAL_EXCLUDED_KEYS = new Set([
+  'id', '_id', 'contactid', 'contact_id', 'locationid', 'location_id',
+  'calendarid', 'calendar_id', 'workflowid', 'workflow_id',
+  'createdat', 'created_at', 'updatedat', 'updated_at', 'timestamp',
+  'appointmentid', 'appointment_id', 'triggerid', 'trigger_id',
+]);
+const _QUAL_EXCLUDED_PATTERNS = [
+  /\battribution\b/i, /\butm_/i, /\btracking\b/i,
+  /\bbrowser\b/i,    /\bplatform\b/i, /\bip\b/i, /\buser.?agent\b/i,
+  /\bgclid\b/i,      /\bfbclid\b/i,  /\bwebhook\b/i,
+  /_id$/i,           /^id$/i,
+];
+
+// Extract only the human-readable qualification answers from a GHL workflow payload.
+// Scans customData + triggerData, strips out all technical/metadata keys.
+function extractQualificationAnswers(rawPayload) {
+  if (!rawPayload) return {};
+  const answers = {};
+
+  const _exclude = (key) => {
+    const kl = key.toLowerCase().replace(/\s+/g, '');
+    return _QUAL_EXCLUDED_KEYS.has(kl) || _QUAL_EXCLUDED_PATTERNS.some(p => p.test(key));
+  };
+
+  const scan = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    for (const [key, val] of Object.entries(obj)) {
+      const strVal = typeof val === 'string' ? val.trim() : '';
+      if (!strVal || _exclude(key)) continue;
+      if (!answers[key]) answers[key] = strVal;
+    }
+  };
+
+  scan(rawPayload.customData);
+  scan(rawPayload.triggerData);
+  return answers;
 }
 
 // List appointments/events within a time range for a location
@@ -274,5 +332,6 @@ module.exports = {
   generateWebhookToken,
   normalizeWebhookPayload,
   extractInstagram,
+  extractQualificationAnswers,
   mapAppointmentStatus,
 };
