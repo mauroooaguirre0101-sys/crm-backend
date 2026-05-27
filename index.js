@@ -4234,6 +4234,51 @@ async function _getCalendlyToken(negocio_id) {
   }
 }
 
+// Update matching lead estado to 'Agendado' — try instagram first, fallback to nombre
+async function _calendlyUpdateLeadAgendado(instagram, name, cliente_id) {
+  const FINAL = ['Cerrado', 'Seña', 'Perdido', 'Perdido Post Call', 'No Show'];
+  let lead = null;
+  let matchedBy = '';
+
+  if (instagram) {
+    const { data } = await supabase.from('leads')
+      .select('id, estado')
+      .eq('cliente_id', cliente_id)
+      .ilike('instagram', instagram)
+      .limit(1)
+      .maybeSingle();
+    if (data) { lead = data; matchedBy = 'instagram'; }
+  }
+
+  if (!lead && name && name !== 'Sin nombre') {
+    const { data } = await supabase.from('leads')
+      .select('id, estado')
+      .eq('cliente_id', cliente_id)
+      .ilike('nombre', name)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data) { lead = data; matchedBy = 'nombre'; }
+  }
+
+  if (!lead) {
+    console.log(`[Calendly] No lead match for Agendado — ig="${instagram}" name="${name}"`);
+    return;
+  }
+  if (FINAL.includes(lead.estado)) {
+    console.log(`[Calendly] Lead id=${lead.id} already in final state "${lead.estado}" — skipping`);
+    return;
+  }
+
+  const { error } = await supabase.from('leads')
+    .update({ estado: 'Agendado', updated_at: new Date().toISOString() })
+    .eq('id', lead.id)
+    .eq('cliente_id', cliente_id);
+
+  if (error) console.warn(`[Calendly] Lead Agendado update failed: ${error.message}`);
+  else console.log(`[Calendly] ✓ Lead id=${lead.id} → Agendado (matched by ${matchedBy})`);
+}
+
 // Insert a new call into the `calls` table (the table "Llamadas de venta" reads from)
 async function _calendlyCreateCall(inv, cliente_id) {
   // Count existing calls for this instagram to set numero_llamada
@@ -4294,6 +4339,12 @@ async function _calendlyCreateCall(inv, cliente_id) {
   }
 
   console.log(`[Calendly Lead Created] ✓ call.id=${data.id} cliente=${cliente_id} nombre="${inv.name}" email=${inv.email} fecha=${inv.startTime}`);
+
+  // Auto-move matching lead to 'Agendado' in the pipeline
+  await _calendlyUpdateLeadAgendado(instagramKey, inv.name, cliente_id).catch(e => {
+    console.warn('[Calendly] Lead Agendado update error:', e.message);
+  });
+
   return data.id;
 }
 
