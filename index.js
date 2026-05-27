@@ -4919,6 +4919,7 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
       _ghlProvider.normalizeWebhookPayload(rawBody);
 
     console.log(`[GHL Webhook] Parsed → eventType=${eventType || '?'} appointmentId=${appointmentId || '?'} contactId=${contactId || '?'} locationId=${locationId || '?'} webhookToken=${webhookToken || 'none'}`);
+    console.log(`[GHL Webhook] Location sources → body.locationId=${rawBody.locationId || '—'} body.location_id=${rawBody.location_id || '—'} body.location?.id=${rawBody.location?.id || '—'} body.payload?.location?.id=${rawBody.payload?.location?.id || '—'} → resolved=${locationId || 'NONE'}`);
 
     // Identify negocio from webhook token (?t=TOKEN in URL)
     let cliente_id = null;

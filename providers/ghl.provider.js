@@ -163,7 +163,10 @@ function normalizeWebhookPayload(body) {
     || (body.contact && (body.contact.id || body.contact._id))
     || null;
 
-  const locationId = body.locationId || body.location_id || null;
+  const locationId = body.locationId || body.location_id
+    || (body.location && (body.location.id || body.location._id))
+    || (body.payload && body.payload.location && (body.payload.location.id || body.payload.location._id))
+    || null;
 
   return { type, appointmentId, contactId, locationId, raw: body };
 }
