@@ -186,32 +186,99 @@ const { startGateway: _startDiscordGateway } = require('./discord.gateway');
 const { verifySignature: _calendlyVerify, extractInvitee: _calendlyExtract } = require('./calendly.service');
 const _calendlyOAuth = require('./calendly.oauth');
 
-const AI_BASE_SYSTEM = `Eres un analista estratégico de ventas de alto ticket especializado en el mercado hispanohablante. Tu rol es analizar transcripts de llamadas de ventas y actuar como un consultor experto.
+const AI_BASE_SYSTEM = `Eres un coach experto en ventas de alto ticket para infoproductores hispanohablantes. Analizás transcripts de llamadas de setters y closers con precisión clínica.
 
-Cuando analizás un transcript por primera vez, estructurás la respuesta con estas secciones usando markdown:
+Cuando analizás un transcript por primera vez, respondés con DOS partes:
+
+---
+
+PARTE 1 — ANÁLISIS NARRATIVO (markdown):
 
 ## Resumen ejecutivo
-(2-3 oraciones sobre la llamada)
+(2-3 oraciones: qué pasó, resultado, oportunidad principal)
 
-## Dolores principales detectados
-(lista de bullets con los problemas que mencionó el prospecto)
+## Dolores detectados
+(bullets con los problemas que mencionó el prospecto, con citas si aplica)
 
 ## Objeciones identificadas
-(lista de bullets con objeciones concretas que dijo o insinuó)
-
-## Nivel de interés
-(número del 1 al 10 con justificación de 1-2 oraciones)
+(bullets: objeción — cómo se manejó — cómo debería haberse manejado)
 
 ## Señales de compra
-(bullets con señales positivas)
+(bullets con señales de interés o urgencia)
 
 ## Señales de alerta
-(bullets con señales de riesgo o rechazo)
+(bullets con señales de riesgo, frialdad o resistencia)
 
-## Próximos pasos recomendados
-(bullets con acciones concretas priorizadas)
+## Próximos pasos
+(bullets priorizados con acciones concretas)
 
-Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa a menos que se pida explícitamente. Siempre respondés en español.`;
+---
+
+PARTE 2 — SCORECARD ESTRUCTURADO (siempre al final, sin excepción):
+
+Inmediatamente después del análisis, incluí exactamente este bloque sin ningún texto entre medio:
+
+__SCORECARD__
+{
+  "score_global": 0.0,
+  "summary": "Resumen ejecutivo de 2-3 oraciones",
+  "phases": [
+    {"id":"apertura","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta con cómo ejecutarla"]},
+    {"id":"rapport","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"diagnostico","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"agitacion","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"vision","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"calificacion","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"pitch","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"objeciones","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"cierre","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
+    {"id":"compromiso","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]}
+  ],
+  "actions": [
+    {"title":"Acción concreta 1","desc":"Cómo ejecutarla exactamente en la próxima llamada"},
+    {"title":"Acción concreta 2","desc":"Cómo ejecutarla exactamente"},
+    {"title":"Acción concreta 3","desc":"Cómo ejecutarla exactamente"}
+  ],
+  "impactTitle": "Fase con mayor potencial de mejora inmediata",
+  "impactDesc": "Por qué esta fase es la más crítica y qué resultado concreto se espera al mejorarla"
+}
+__/SCORECARD__
+
+REGLAS DEL SCORECARD:
+- score_global: promedio de los 10 scores, con un decimal
+- Scores del 1 al 10, enteros, realistas y rigurosos (no seas condescendiente)
+- Si una fase no ocurrió o no hay transcript suficiente para evaluarla, score 1 y explicalo en "improve"
+- good y improve: mínimo 1 item cada uno, máximo 3, específicos y accionables
+- actions: entre 3 y 5 acciones, con instrucciones exactas de ejecución
+- El bloque __SCORECARD__ debe ser JSON válido, sin comentarios dentro
+
+Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa. Siempre respondés en español.`;
+
+// Fases del scorecard para el frontend
+const GHL_CALL_PHASES = [
+  { id: 'apertura',     name: 'Apertura',      icon: '🎯' },
+  { id: 'rapport',      name: 'Rapport',        icon: '🤝' },
+  { id: 'diagnostico',  name: 'Diagnóstico',    icon: '🔍' },
+  { id: 'agitacion',    name: 'Agitación',      icon: '💥' },
+  { id: 'vision',       name: 'Visión',         icon: '✨' },
+  { id: 'calificacion', name: 'Calificación',   icon: '💎' },
+  { id: 'pitch',        name: 'Pitch',          icon: '🎤' },
+  { id: 'objeciones',   name: 'Objeciones',     icon: '🛡' },
+  { id: 'cierre',       name: 'Cierre',         icon: '✅' },
+  { id: 'compromiso',   name: 'Compromiso',     icon: '📌' },
+];
+
+function _parseCallScorecard(text) {
+  try {
+    const match = text.match(/__SCORECARD__\s*([\s\S]*?)\s*__\/SCORECARD__/);
+    if (!match) return null;
+    return JSON.parse(match[1]);
+  } catch { return null; }
+}
+
+function _stripScorecardBlock(text) {
+  return text.replace(/__SCORECARD__[\s\S]*?__\/SCORECARD__/g, '').trim();
+}
 
 const CHAT_BASE_SYSTEM = `Sos un analista estratégico de ventas especializado en conversaciones de prospección por chat (Instagram DM, WhatsApp, etc.) para negocios de alto ticket en el mercado hispanohablante. Tu trabajo es analizar conversaciones entre setters/vendedores y leads para identificar oportunidades, errores y estrategias de mejora.
 
@@ -2592,27 +2659,31 @@ app.post('/ai/analyze', validateAccess, async (req, res) => {
       messages: [{ role: 'user', content: userMessage }]
     });
 
-    const assistantResponse = completion.content[0].text;
+    const rawResponse    = completion.content[0].text;
+    const scorecard      = _parseCallScorecard(rawResponse);
+    const cleanResponse  = _stripScorecardBlock(rawResponse);
+
     const messages = [
-      { role: 'user', content: userMessage },
-      { role: 'assistant', content: assistantResponse }
+      { role: 'user',      content: userMessage  },
+      { role: 'assistant', content: cleanResponse },
     ];
 
     const insertData = { cliente_id: req.cliente_id, transcript: transcript.trim(), messages };
-    if (call_id) insertData.call_id = call_id;
+    if (call_id)  insertData.call_id   = call_id;
+    if (scorecard) insertData.scorecard = scorecard;
 
     const { data: saved, error: saveErr } = await supabase
       .from('call_analyses')
       .insert(insertData)
-      .select('id, created_at')
+      .select('id, created_at, scorecard')
       .single();
 
     if (saveErr) {
       console.error('❌ AI SAVE:', saveErr);
-      return res.json({ id: null, response: assistantResponse, messages });
+      return res.json({ id: null, response: cleanResponse, messages, scorecard });
     }
 
-    res.json({ id: saved.id, response: assistantResponse, messages, created_at: saved.created_at });
+    res.json({ id: saved.id, response: cleanResponse, messages, scorecard: saved.scorecard, created_at: saved.created_at });
   } catch (err) {
     console.error('❌ AI ANALYZE:', err);
     res.status(500).json({ error: err.message });
@@ -2690,7 +2761,7 @@ app.get('/ai/analyses', validateAccess, async (req, res) => {
     const { call_id } = req.query;
     let q = supabase
       .from('call_analyses')
-      .select('id, call_id, created_at, updated_at, transcript')
+      .select('id, call_id, created_at, updated_at, transcript, scorecard')
       .eq('cliente_id', req.cliente_id)
       .order('created_at', { ascending: false })
       .limit(50);
