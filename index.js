@@ -5362,8 +5362,41 @@ app.get('/integration/provider', validateAccess, async (req, res) => {
       .from('calendar_integrations')
       .select('connected_at, status, metadata, provider_location_id, webhook_url, webhook_id')
       .eq('negocio_id', req.cliente_id).eq('provider', 'ghl').maybeSingle();
-    connected = !!(data && data.status === 'connected');
-    info      = data;
+
+    // Private Integration fallback: if DB has placeholder or no row, use env vars
+    const PLACEHOLDER = 'TU_LOCATION_ID_AQUI';
+    const envLocId    = process.env.GHL_LOCATION_ID;
+    const envKey      = process.env.GHL_API_KEY;
+    const envNegocio  = process.env.GHL_NEGOCIO_IDS; // e.g. "cliente_2"
+
+    let locationId = data?.provider_location_id;
+    if (!locationId || locationId === PLACEHOLDER) locationId = envLocId || locationId;
+
+    if (data) {
+      connected = data.status === 'connected';
+      info      = { ...data, provider_location_id: locationId };
+    } else if (envKey && envLocId && envNegocio && envNegocio.split(',').map(s=>s.trim()).includes(req.cliente_id)) {
+      // Private Integration without a DB row — synthesize connected state
+      connected = true;
+      info = {
+        provider_location_id: envLocId,
+        connected_at: null,
+        status: 'connected',
+        webhook_id: null,
+        webhook_url: null,
+        metadata: null,
+      };
+    }
+
+    // Enrich with calendars and closers/setters detected from GHL calls
+    if (connected && info) {
+      const [calsRes, closersRes] = await Promise.all([
+        supabase.from('calls').select('calendar_name').eq('cliente_id', req.cliente_id).eq('origen', 'GHL').not('calendar_name', 'is', null).limit(200),
+        supabase.from('calls').select('closer').eq('cliente_id', req.cliente_id).eq('origen', 'GHL').not('closer', 'is', null).neq('closer', '').limit(200),
+      ]);
+      info.detected_calendars = [...new Set((calsRes.data  || []).map(r => r.calendar_name).filter(Boolean))];
+      info.detected_closers   = [...new Set((closersRes.data || []).map(r => r.closer).filter(Boolean))];
+    }
   } else {
     const { data } = await supabase
       .from('calendly_connections')
