@@ -186,9 +186,13 @@ function normalizeWebhookPayload(body) {
 
 function _normalizeEventType(event) {
   const map = {
-    'appointment_created': 'AppointmentCreate',
-    'appointment_updated': 'AppointmentUpdate',
-    'appointment_deleted': 'AppointmentDelete',
+    'appointment_created':      'AppointmentCreate',
+    'appointment_updated':      'AppointmentUpdate',
+    'appointment_deleted':      'AppointmentDelete',
+    'appointment_rescheduled':  'AppointmentRescheduled',
+    'appointment_confirmed':    'AppointmentConfirmed',
+    'appointment_no_show':      'AppointmentNoShow',
+    'appointment_completed':    'AppointmentCompleted',
   };
   return map[event?.toLowerCase()] || event;
 }
@@ -336,17 +340,31 @@ async function listAppointments(accessToken, locationId, startTime, endTime) {
 function mapAppointmentStatus(ghlStatus) {
   switch ((ghlStatus || '').toLowerCase()) {
     case 'cancelled':
-    case 'cancel':     return 'Cancelada';
+    case 'cancel':        return 'Cancelada';
     case 'showed':
     case 'show':
-    case 'completed':  return 'Completada';
+    case 'completed':     return 'Completada';
     case 'noshow':
     case 'no_show':
-    case 'no-show':    return 'No asistió';
+    case 'no-show':       return 'No asistió';
+    case 'rescheduled':   return 'Re agenda';
     case 'booked':
     case 'confirmed':
-    case 'new':        return 'Pendiente';
-    default:           return 'Pendiente';
+    case 'new':           return 'Pendiente';
+    default:              return 'Pendiente';
+  }
+}
+
+// Derive CRM estado from GHL event type (for events without an appointmentStatus)
+function mapEventTypeToEstado(eventType) {
+  switch (eventType) {
+    case 'AppointmentDelete':
+    case 'AppointmentCancelled':  return 'Cancelada';
+    case 'AppointmentNoShow':     return 'No asistió';
+    case 'AppointmentCompleted':  return 'Completada';
+    case 'AppointmentRescheduled':return 'Re agenda';
+    case 'AppointmentConfirmed':  return 'Pendiente';
+    default:                      return null; // use appointmentStatus
   }
 }
 
@@ -367,4 +385,5 @@ module.exports = {
   extractInstagram,
   extractQualificationAnswers,
   mapAppointmentStatus,
+  mapEventTypeToEstado,
 };

@@ -4823,10 +4823,10 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   const telefono = contact.phone || contact.phone_raw || contact.full_phone_number
     || rawPayload.phone || rawPayload.phone_raw || rawPayload.contact?.phone || '';
   console.log(`[GHL Parser] resolved phone=${telefono || '(none)'}`);
-  const estado   = _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
 
-  const isUpdate    = eventType === 'AppointmentUpdate';
-  const isDelete    = eventType === 'AppointmentDelete';
+  const UPDATE_TYPES = new Set(['AppointmentUpdate','AppointmentRescheduled','AppointmentConfirmed','AppointmentNoShow','AppointmentCompleted']);
+  const isUpdate = UPDATE_TYPES.has(eventType);
+  const isDelete = eventType === 'AppointmentDelete';
   const meetingLink = (appt.address && appt.address.startsWith('http')) ? appt.address : null;
 
   const apptId = appt.appointmentId || appt.id || null;
@@ -4835,15 +4835,28 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   const closer = [
     rawPayload.user?.firstName || '',
     rawPayload.user?.lastName  || '',
-  ].filter(Boolean).join(' ').trim()
-    || appt.title || appt.calendarTitle || '';
-  console.log(`[GHL Parser] resolved closer="${closer || '(none)'}"`);
+  ].filter(Boolean).join(' ').trim() || '';
+  const closerEmail = rawPayload.user?.email || '';
+  console.log(`[GHL Parser] resolved closer="${closer || '(none)'}" closerEmail="${closerEmail || '(none)'}"`);
 
   // ── calendar_id: nested body.calendar.id → top-level variants ────────────────
   const calendarId = (rawPayload.calendar && (rawPayload.calendar.id || rawPayload.calendar.calendarId))
     || rawPayload.calendarId || rawPayload.calendar_id
     || appt.calendarId || appt.calendar_id || null;
   console.log(`[GHL Parser] resolved calendarId=${calendarId || '(none)'}`);
+
+  // ── calendar_name: calendarName (human label) > name > title (appointment title) ──
+  const calendarName = rawPayload.calendar?.calendarName
+    || rawPayload.calendar?.name
+    || appt.calendarName
+    || appt.calendarTitle
+    || appt.title
+    || null;
+  console.log(`[GHL Parser] resolved calendarName="${calendarName || '(none)'}"`);
+
+  // ── estado: event-type override > appointmentStatus ────────────────────────
+  const estadoByEvent = _ghlProvider.mapEventTypeToEstado(eventType);
+  const estado = estadoByEvent || _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
 
   // Extract qualification answers early so they're available for both UPDATE and INSERT
   const qualAnswers  = _ghlProvider.extractQualificationAnswers(rawPayload);
@@ -4857,12 +4870,12 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   // Try to find existing call by provider_event_id
   if (apptId) {
     const { data: existing, error: lookupErr } = await supabase.from('calls')
-      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion, closer, calendar_id')
+      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion, closer, closer_email, calendar_id')
       .eq('cliente_id', cliente_id).eq('provider_event_id', apptId).maybeSingle();
     if (lookupErr) console.warn(`[GHL UpsertCall] Lookup error: ${lookupErr.message}`);
 
     if (existing) {
-      console.log(`[GHL UpsertCall] Found existing call id=${existing.id} — updating`);
+      console.log(`[GHL UpsertCall] Found existing call id=${existing.id} — updating (event=${eventType})`);
       const updatePatch = {
         fecha_llamada: appt.startTime || null,
         estado:        isDelete ? 'Cancelada' : estado,
@@ -4875,11 +4888,12 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
         ...(preguntasCalificacion || existing.preguntas_calificacion
           ? { preguntas_calificacion: preguntasCalificacion || existing.preguntas_calificacion } : {}),
         ...(apptId                                      && { provider_event_id: apptId }),
-        ...((appt.title || appt.calendarTitle)          && { calendar_name: appt.title || appt.calendarTitle }),
+        ...(calendarName                                && { calendar_name: calendarName }),
         ...(closer || existing.closer                   ? { closer: closer || existing.closer } : {}),
+        ...(closerEmail || existing.closer_email        ? { closer_email: closerEmail || existing.closer_email } : {}),
         ...(calendarId || existing.calendar_id          ? { calendar_id: calendarId || existing.calendar_id } : {}),
       };
-      if (isUpdate && appt.startTime && appt.startTime !== existing.fecha_llamada) {
+      if (eventType === 'AppointmentRescheduled' && appt.startTime && appt.startTime !== existing.fecha_llamada) {
         updatePatch.reagendada = true;
       }
 
@@ -4929,9 +4943,10 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     fecha_llamada:          appt.startTime  || null,
     link_llamada:           meetingLink     || null,
     provider_event_id:      apptId         || null,
-    calendar_name:          appt.title     || appt.calendarTitle || null,
+    calendar_name:          calendarName   || null,
     preguntas_calificacion: preguntasCalificacion,
     closer:                 closer         || null,
+    closer_email:           closerEmail    || null,
     calendar_id:            calendarId     || null,
   };
 
@@ -5169,6 +5184,20 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
 
     // ── Save raw payload to calls_ghl (audit trail for cliente_2) ────────────
     await _ghlSaveRawPayload({ cliente_id, call_id: callId, eventType, inferred, rawBody, contact, calendar: embeddedCalendar });
+
+    // ── Update webhook health timestamp in calendar_integrations ─────────────
+    try {
+      const { data: connRow } = await supabase.from('calendar_integrations')
+        .select('metadata').eq('negocio_id', cliente_id).eq('provider', 'ghl').maybeSingle();
+      const prevMeta = (typeof connRow?.metadata === 'string'
+        ? JSON.parse(connRow.metadata) : connRow?.metadata) || {};
+      await supabase.from('calendar_integrations')
+        .update({ metadata: { ...prevMeta, last_webhook_at: new Date().toISOString() } })
+        .eq('negocio_id', cliente_id).eq('provider', 'ghl');
+      console.log(`[GHL Health] ✓ last_webhook_at updated for cliente_id=${cliente_id}`);
+    } catch (e) {
+      console.warn(`[GHL Health] Could not update last_webhook_at: ${e.message}`);
+    }
 
     _logGhlWebhook({ eventType, inferred, appointmentId, contactId, cliente_id, callId,
       status: eventType === 'AppointmentUpdate' ? 'updated' : 'created' });
