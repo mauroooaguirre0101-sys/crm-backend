@@ -2418,6 +2418,110 @@ app.get('/holding/tasks-summary', async (req, res) => {
 });
 
 // ===============================
+// 💸 HOLDING GASTOS
+// ===============================
+
+// GET /holding/gastos?mes=YYYY-MM  — list gastos for a given month (or all if no mes)
+app.get('/holding/gastos', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    let q = supabase.from('holding_gastos').select('*').order('created_at', { ascending: false });
+    if (req.query.mes) q = q.eq('mes', req.query.mes);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /holding/gastos  — add a new gasto
+app.post('/holding/gastos', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { concepto, monto, mes } = req.body;
+    if (!concepto || !monto || !mes) return res.status(400).json({ error: 'concepto, monto y mes son requeridos' });
+    const { data, error } = await supabase.from('holding_gastos')
+      .insert({ concepto: concepto.trim(), monto: parseFloat(monto), mes })
+      .select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /holding/gastos/:id
+app.delete('/holding/gastos/:id', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const { error } = await supabase.from('holding_gastos').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /holding/mtd-chart?cliente_ids=X,Y&year=2026&month=05
+// Returns daily cumulative Cash Collected for current month + previous month (for MTD chart)
+app.get('/holding/mtd-chart', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+    const ids = (req.query.cliente_ids || '').split(',').filter(Boolean);
+    if (!ids.length) return res.json({ current: { cumulative: [], total: 0 }, previous: { cumulative: [], total: 0 } });
+
+    const now = new Date();
+    const y   = parseInt(req.query.year)  || now.getFullYear();
+    const m   = req.query.month ? String(req.query.month).padStart(2, '0') : String(now.getMonth() + 1).padStart(2, '0');
+    const mInt = parseInt(m);
+    const daysInMonth = new Date(y, mInt, 0).getDate();
+
+    const prevM_int      = mInt === 1 ? 12 : mInt - 1;
+    const prevY          = mInt === 1 ? y - 1 : y;
+    const prevM          = String(prevM_int).padStart(2, '0');
+    const daysInPrevMonth = new Date(prevY, prevM_int, 0).getDate();
+
+    const curFrom  = `${y}-${m}-01T00:00:00.000Z`;
+    const curTo    = `${y}-${m}-${String(daysInMonth).padStart(2, '0')}T23:59:59.999Z`;
+    const prevFrom = `${prevY}-${prevM}-01T00:00:00.000Z`;
+    const prevTo   = `${prevY}-${prevM}-${String(daysInPrevMonth).padStart(2, '0')}T23:59:59.999Z`;
+
+    const results = await Promise.all(ids.map(cid => Promise.all([
+      supabase.from('clientes').select('cash_collected,created_at').eq('cliente_id', cid).gte('created_at', curFrom).lte('created_at', curTo),
+      supabase.from('clientes').select('cash_collected,created_at').eq('cliente_id', cid).gte('created_at', prevFrom).lte('created_at', prevTo),
+    ])));
+
+    const allCur  = results.flatMap(([c])    => c.data || []);
+    const allPrev = results.flatMap(([, p]) => p.data || []);
+
+    const buildCumulative = (rows, days) => {
+      const daily = Array(days).fill(0);
+      rows.forEach(r => {
+        const d = parseInt((r.created_at || '').slice(8, 10)) - 1;
+        if (d >= 0 && d < days) daily[d] += parseFloat(r.cash_collected) || 0;
+      });
+      let acc = 0;
+      return daily.map(v => { acc += v; return acc; });
+    };
+
+    const MONTH_LABELS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    res.json({
+      current:  {
+        year: y, month: m, monthName: MONTH_LABELS[mInt - 1],
+        days: daysInMonth,
+        cumulative: buildCumulative(allCur, daysInMonth),
+        total: allCur.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0),
+      },
+      previous: {
+        year: prevY, month: prevM, monthName: MONTH_LABELS[prevM_int - 1],
+        days: daysInPrevMonth,
+        cumulative: buildCumulative(allPrev, daysInPrevMonth),
+        total: allPrev.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0),
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
 // 🎨 FORMATOS
 // ===============================
 app.get('/formatos', validateAccess, async (req, res) => {
