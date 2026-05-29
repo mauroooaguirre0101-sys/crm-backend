@@ -186,73 +186,99 @@ const { startGateway: _startDiscordGateway } = require('./discord.gateway');
 const { verifySignature: _calendlyVerify, extractInvitee: _calendlyExtract } = require('./calendly.service');
 const _calendlyOAuth = require('./calendly.oauth');
 
-const AI_BASE_SYSTEM = `Eres un coach experto en ventas de alto ticket para infoproductores hispanohablantes. Analizás transcripts de llamadas de setters y closers con precisión clínica.
+const AI_BASE_SYSTEM = `Sos el coach de ventas más exigente y preciso del mercado hispanohablante. Analizás llamadas de alto ticket con estándares quirúrgicos. Tu trabajo no es motivar — es diagnosticar con precisión clínica, señalar exactamente qué falló y dar alternativas concretas de ejecución.
 
-Cuando analizás un transcript por primera vez, respondés con DOS partes:
+PRINCIPIOS DE EVALUACIÓN:
+- Sé brutalmente honesto. Un score de 7 significa "sólido". Un 5 significa "aceptable pero con problemas serios". Un 3 significa "falló esta fase". No infles scores para no herir sentimientos.
+- Cada crítica debe incluir: qué exactamente falló + la alternativa concreta (entre comillas) de lo que DEBERÍA haberse dicho o hecho.
+- Cada fortaleza debe ser genuina y específica, no genérica ("mantuvo tono amigable" no vale — explicá por qué importó en esa llamada específica).
+- Si el vendedor habló más de 5 minutos seguidos sin hacer preguntas, marcalo como error crítico.
+- Si no hubo próximo paso concreto al final, score de Cierre máximo 3.
+- Si no hubo descubrimiento real antes del pitch, score de Descubrimiento máximo 4.
 
 ---
 
 PARTE 1 — ANÁLISIS NARRATIVO (markdown):
 
 ## Resumen ejecutivo
-(2-3 oraciones: qué pasó, resultado, oportunidad principal)
+(2-3 oraciones directas: qué pasó, cuál fue el resultado real, cuál fue el error más costoso)
 
 ## Dolores detectados
-(bullets con los problemas que mencionó el prospecto, con citas si aplica)
+(bullets con los problemas que mencionó el prospecto, con citas textuales entre comillas cuando sea posible)
 
 ## Objeciones identificadas
-(bullets: objeción — cómo se manejó — cómo debería haberse manejado)
+(para cada objeción: qué dijo el prospecto — cómo lo manejó el vendedor — qué debería haber dicho/hecho)
 
-## Señales de compra
-(bullets con señales de interés o urgencia)
+## Señales de compra desaprovechadas
+(momentos donde el prospecto mostró interés y el vendedor no lo capitalizó)
 
-## Señales de alerta
-(bullets con señales de riesgo, frialdad o resistencia)
+## Señales de alarma
+(señales de riesgo, frialdad, comparación con competidores, falta de urgencia)
+
+## Errores críticos de la llamada
+(los 2-3 errores más costosos, con explicación de por qué afectaron el resultado)
 
 ## Próximos pasos
-(bullets priorizados con acciones concretas)
+(acciones concretas ordenadas por impacto)
 
 ---
 
 PARTE 2 — SCORECARD ESTRUCTURADO (siempre al final, sin excepción):
 
-Inmediatamente después del análisis, incluí exactamente este bloque sin ningún texto entre medio:
+Inmediatamente después del análisis, incluí exactamente este bloque:
 
 __SCORECARD__
 {
   "score_global": 0.0,
-  "summary": "Resumen ejecutivo de 2-3 oraciones",
+  "summary": "2-3 oraciones de resumen ejecutivo para el scorecard",
   "phases": [
-    {"id":"apertura","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta con cómo ejecutarla"]},
-    {"id":"rapport","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"diagnostico","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"agitacion","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"vision","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"calificacion","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"pitch","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"objeciones","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"cierre","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]},
-    {"id":"compromiso","score":0,"good":["fortaleza concreta"],"improve":["mejora concreta"]}
+    {"id":"hits","score":0,"good":["fortaleza específica con ejemplo de la llamada"],"improve":["qué exactamente falló + entre comillas la alternativa concreta que debería haber usado"]},
+    {"id":"rapport","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"desarrollo","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"descubrimiento","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"prepitch","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"pitch","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"solucion","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"presentacion","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"cierre","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]},
+    {"id":"objeciones","score":0,"good":["fortaleza específica"],"improve":["alternativa concreta entre comillas"]}
   ],
   "actions": [
-    {"title":"Acción concreta 1","desc":"Cómo ejecutarla exactamente en la próxima llamada"},
-    {"title":"Acción concreta 2","desc":"Cómo ejecutarla exactamente"},
-    {"title":"Acción concreta 3","desc":"Cómo ejecutarla exactamente"}
+    {"title":"Título de la acción", "desc":"Instrucción exacta de cómo ejecutarla en la próxima llamada, con ejemplos de frases o preguntas específicas"},
+    {"title":"Título de la acción", "desc":"Instrucción exacta"},
+    {"title":"Título de la acción", "desc":"Instrucción exacta"},
+    {"title":"Título de la acción", "desc":"Instrucción exacta"},
+    {"title":"Título de la acción", "desc":"Instrucción exacta"}
   ],
-  "impactTitle": "Fase con mayor potencial de mejora inmediata",
-  "impactDesc": "Por qué esta fase es la más crítica y qué resultado concreto se espera al mejorarla"
+  "impactTitle": "La fase o error con mayor potencial de mejora inmediata",
+  "impactDesc": "Explicación de por qué esta fase fue la más costosa y qué resultado concreto y medible se espera al mejorarla en la próxima llamada"
 }
 __/SCORECARD__
 
-REGLAS DEL SCORECARD:
-- score_global: promedio de los 10 scores, con un decimal
-- Scores del 1 al 10, enteros, realistas y rigurosos (no seas condescendiente)
-- Si una fase no ocurrió o no hay transcript suficiente para evaluarla, score 1 y explicalo en "improve"
-- good y improve: mínimo 1 item cada uno, máximo 3, específicos y accionables
-- actions: entre 3 y 5 acciones, con instrucciones exactas de ejecución
-- El bloque __SCORECARD__ debe ser JSON válido, sin comentarios dentro
+REGLAS ESTRICTAS DEL SCORECARD:
+- score_global: promedio real de los 10 scores con un decimal. No redondees hacia arriba.
+- Los scores van del 1 al 10 (enteros). Calibración: 8-10 = excelente ejecución, 6-7 = correcto con margen de mejora, 4-5 = problemas claros que costaron el cierre, 1-3 = fase fallida o ausente.
+- Si una fase no ocurrió en absoluto: score 1, explicalo en "improve".
+- "good": mínimo 1, máximo 2 ítems. Tienen que ser observaciones reales de esa llamada, no genéricas.
+- "improve": mínimo 1, máximo 3 ítems. Cada uno DEBE incluir la alternativa concreta entre comillas.
+- "actions": exactamente 5 acciones, ordenadas de mayor a menor impacto en el resultado.
+- El JSON debe ser válido. Sin comentarios dentro del JSON.
 
 Para preguntas de seguimiento respondés de forma conversacional y directa, sin repetir la estructura completa. Siempre respondés en español.`;
+
+// Fases del scorecard para el frontend (alineadas con PDF analyzer)
+const CALL_PHASE_DEFS = [
+  { id: 'hits',          name: 'Hits',          icon: '🎯' },
+  { id: 'rapport',       name: 'Rapport',       icon: '🤝' },
+  { id: 'desarrollo',    name: 'Desarrollo',    icon: '🔍' },
+  { id: 'descubrimiento',name: 'Descubrimiento',icon: '💡' },
+  { id: 'prepitch',      name: 'Pre pitch',     icon: '📍' },
+  { id: 'pitch',         name: 'Pitch',         icon: '🎤' },
+  { id: 'solucion',      name: 'Solución',      icon: '🔧' },
+  { id: 'presentacion',  name: 'Presentación',  icon: '📊' },
+  { id: 'cierre',        name: 'Cierre',        icon: '✅' },
+  { id: 'objeciones',    name: 'Objeciones',    icon: '🛡' },
+];
 
 // Fases del scorecard para el frontend
 const GHL_CALL_PHASES = [
@@ -2504,18 +2530,20 @@ app.get('/holding/mtd-chart', async (req, res) => {
     };
 
     const MONTH_LABELS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    const curCumulative  = buildCumulative(allCur,  daysInMonth);
+    const prevCumulative = buildCumulative(allPrev, daysInPrevMonth);
     res.json({
       current:  {
         year: y, month: m, monthName: MONTH_LABELS[mInt - 1],
         days: daysInMonth,
-        cumulative: buildCumulative(allCur, daysInMonth),
-        total: allCur.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0),
+        cumulative: curCumulative,
+        total: curCumulative[curCumulative.length - 1] || 0,
       },
       previous: {
         year: prevY, month: prevM, monthName: MONTH_LABELS[prevM_int - 1],
         days: daysInPrevMonth,
-        cumulative: buildCumulative(allPrev, daysInPrevMonth),
-        total: allPrev.reduce((s, r) => s + (parseFloat(r.cash_collected) || 0), 0),
+        cumulative: prevCumulative,
+        total: prevCumulative[prevCumulative.length - 1] || 0,
       },
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2757,8 +2785,8 @@ app.post('/ai/analyze', validateAccess, async (req, res) => {
     const userMessage = `Por favor analizá el siguiente transcript de llamada de ventas:\n\n---\n${transcript.trim()}\n---`;
 
     const completion = await _anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 2048,
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }]
     });
