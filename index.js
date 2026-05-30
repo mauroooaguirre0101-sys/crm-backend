@@ -298,7 +298,9 @@ function _parseCallScorecard(text) {
   try {
     const match = text.match(/__SCORECARD__\s*([\s\S]*?)\s*__\/SCORECARD__/);
     if (!match) return null;
-    return JSON.parse(match[1]);
+    // Strip markdown code block wrapping if the AI added ```json ... ```
+    const raw = match[1].replace(/^```(?:json)?\s*/,'').replace(/\s*```\s*$/,'').trim();
+    return JSON.parse(raw);
   } catch { return null; }
 }
 
