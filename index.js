@@ -671,6 +671,7 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       fecha_llamada,
       monto_sena,
       closer,
+      notas_spc,
     } = req.body;
 
     motivo_no_cierre = motivo_no_cierre || '';
@@ -709,6 +710,12 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
     if ('fecha_llamada' in req.body)    patch.fecha_llamada      = fecha_llamada || null;
     if (monto_sena             !== undefined) patch.monto_sena           = monto_sena !== null ? parseFloat(monto_sena) : null;
     if (closer                 !== undefined) patch.closer               = closer || null;
+    if (notas_spc              !== undefined) patch.notas_spc            = notas_spc || null;
+
+    // Auto-registrar fecha de inicio de SPC cuando el estado cambia por primera vez
+    if (estado === 'Seguimiento Post Call' && callData.estado !== 'Seguimiento Post Call') {
+      patch.spc_date = new Date().toISOString();
+    }
 
     const { error } = await supabase
       .from('calls')
@@ -1061,10 +1068,114 @@ app.delete('/clientes/:id', validateAccess, async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
 
+    // Limpiar cuotas huérfanas
+    await supabase
+      .from('cuotas_clientes')
+      .delete()
+      .eq('ref_cliente_id', id)
+      .eq('cliente_id', req.cliente_id);
+
     res.json({ ok: true });
 
   } catch (err) {
     console.error('❌ SERVER:', err);
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+
+// ===============================
+// CUOTAS_CLIENTES CRUD
+// ===============================
+app.get('/cuotas', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('cuotas_clientes')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .order('fecha', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json((data || []).map(r => ({
+      id: r.id,
+      clienteId: r.ref_cliente_id,
+      clienteNombre: r.cliente_nombre,
+      clienteIg: r.cliente_ig,
+      numero: r.numero,
+      fecha: r.fecha,
+      monto: r.monto,
+      pagado: r.pagado,
+      cash_collected: r.cash_collected,
+    })));
+  } catch (err) {
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+app.post('/cuotas', validateAccess, async (req, res) => {
+  try {
+    const { id, ref_cliente_id, cliente_nombre, cliente_ig, numero, fecha, monto, pagado, cash_collected } = req.body;
+    const row = {
+      cliente_id: req.cliente_id,
+      ref_cliente_id: ref_cliente_id || null,
+      cliente_nombre: cliente_nombre || null,
+      cliente_ig: cliente_ig || null,
+      numero: numero ?? 2,
+      fecha: fecha || null,
+      monto: monto ?? 0,
+      pagado: pagado ?? false,
+      cash_collected: cash_collected ?? 0,
+    };
+    if (id) row.id = id;
+    const { data, error } = await supabase.from('cuotas_clientes').insert([row]).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({
+      id: data.id,
+      clienteId: data.ref_cliente_id,
+      clienteNombre: data.cliente_nombre,
+      clienteIg: data.cliente_ig,
+      numero: data.numero,
+      fecha: data.fecha,
+      monto: data.monto,
+      pagado: data.pagado,
+      cash_collected: data.cash_collected,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+app.patch('/cuotas/:id', validateAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const campos = {};
+    if (req.body.pagado !== undefined) campos.pagado = req.body.pagado;
+    if (req.body.monto !== undefined) campos.monto = req.body.monto;
+    if (req.body.cash_collected !== undefined) campos.cash_collected = req.body.cash_collected;
+    if (req.body.fecha !== undefined) campos.fecha = req.body.fecha;
+    if (!Object.keys(campos).length) return res.status(400).json({ error: 'Sin campos' });
+    const { error } = await supabase
+      .from('cuotas_clientes')
+      .update(campos)
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Error servidor' });
+  }
+});
+
+app.delete('/cuotas/:id', validateAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase
+      .from('cuotas_clientes')
+      .delete()
+      .eq('id', id)
+      .eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
     res.status(500).json({ error: 'Error servidor' });
   }
 });
