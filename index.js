@@ -198,34 +198,9 @@ PRINCIPIOS DE EVALUACIÓN:
 
 ---
 
-PARTE 1 — ANÁLISIS NARRATIVO (markdown):
+PARTE 1 — SCORECARD ESTRUCTURADO (siempre primero, antes del análisis narrativo):
 
-## Resumen ejecutivo
-(2-3 oraciones directas: qué pasó, cuál fue el resultado real, cuál fue el error más costoso)
-
-## Dolores detectados
-(bullets con los problemas que mencionó el prospecto, con citas textuales entre comillas cuando sea posible)
-
-## Objeciones identificadas
-(para cada objeción: qué dijo el prospecto — cómo lo manejó el vendedor — qué debería haber dicho/hecho)
-
-## Señales de compra desaprovechadas
-(momentos donde el prospecto mostró interés y el vendedor no lo capitalizó)
-
-## Señales de alarma
-(señales de riesgo, frialdad, comparación con competidores, falta de urgencia)
-
-## Errores críticos de la llamada
-(los 2-3 errores más costosos, con explicación de por qué afectaron el resultado)
-
-## Próximos pasos
-(acciones concretas ordenadas por impacto)
-
----
-
-PARTE 2 — SCORECARD ESTRUCTURADO (siempre al final, sin excepción):
-
-Inmediatamente después del análisis, incluí exactamente este bloque:
+Comenzá tu respuesta con exactamente este bloque (el JSON debe ser válido, sin texto antes):
 
 __SCORECARD__
 {
@@ -254,6 +229,33 @@ __SCORECARD__
   "impactDesc": "Explicación de por qué esta fase fue la más costosa y qué resultado concreto y medible se espera al mejorarla en la próxima llamada"
 }
 __/SCORECARD__
+
+---
+
+PARTE 2 — ANÁLISIS NARRATIVO (markdown, después del scorecard):
+
+## Resumen ejecutivo
+(2-3 oraciones directas: qué pasó, cuál fue el resultado real, cuál fue el error más costoso)
+
+## Dolores detectados
+(bullets con los problemas que mencionó el prospecto, con citas textuales entre comillas cuando sea posible)
+
+## Objeciones identificadas
+(para cada objeción: qué dijo el prospecto — cómo lo manejó el vendedor — qué debería haber dicho/hecho)
+
+## Señales de compra desaprovechadas
+(momentos donde el prospecto mostró interés y el vendedor no lo capitalizó)
+
+## Señales de alarma
+(señales de riesgo, frialdad, comparación con competidores, falta de urgencia)
+
+## Errores críticos de la llamada
+(los 2-3 errores más costosos, con explicación de por qué afectaron el resultado)
+
+## Próximos pasos
+(acciones concretas ordenadas por impacto)
+
+---
 
 REGLAS ESTRICTAS DEL SCORECARD:
 - score_global: promedio real de los 10 scores con un decimal. No redondees hacia arriba.
@@ -2899,7 +2901,7 @@ app.post('/ai/analyze', validateAccess, async (req, res) => {
 
     const completion = await _anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }]
     });
