@@ -3694,9 +3694,9 @@ const REPORT_FUNNEL_FASES = [
   { label: 'Nutrición',        estados: ['Recurso de nutrición'] },
   { label: 'Agendamiento',     estados: ['PITCH VSL CHAT', 'VSL CHAT', 'Proponer Call', 'Calendly Enviado'] },
   { label: 'Cierre',           estados: ['Agendado'] },
-  { label: 'Cerrados',         estados: ['Cerrada', 'Seña'] },
+  { label: 'Cerrados',         estados: ['Cerrado', 'Cerrada', 'Seña'] },
 ];
-const REPORT_ESTADO_CERRADO = new Set(['Cerrada', 'Seña']);
+const REPORT_ESTADO_CERRADO = new Set(['Cerrado', 'Cerrada', 'Seña']);
 const REPORT_ESTADO_PERDIDO = new Set(['Perdido']);
 
 const WEEKLY_REPORT_SYSTEM = `Sos un analista de negocios especializado en negocios de alto ticket en el mercado hispanohablante. Analizás métricas semanales y generás reportes ejecutivos accionables.
