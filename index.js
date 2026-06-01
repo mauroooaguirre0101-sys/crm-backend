@@ -3639,22 +3639,29 @@ CLAVES PREDEFINIDAS DISPONIBLES (usar exactamente estas cadenas de texto como va
 ${Object.entries(METRIC_DESCRIPTIONS).map(([k, v]) => `  "${k}" → ${v}`).join('\n')}
 
 TABLAS DEL CRM (para fórmulas custom):
-  leads: estado ("Agendado","Cerrado","Cerrada","Seña","Perdido","Primer contacto","Calificado","Descubrimiento (Problemas-Objetivos)","Recurso de nutrición","PITCH VSL CHAT","VSL CHAT","Proponer Call","Calendly Enviado"), calificado (boolean), descalificado (boolean)
+  leads: estado ("Agendado","Cerrado","Cerrada","Seña","Perdido","Primer contacto","Descubrimiento (Problemas-Objetivos)","Recurso de nutrición","PITCH VSL CHAT","VSL CHAT","Proponer Call","Calendly Enviado"), calificado (boolean), descalificado (boolean)
   calls: estado ("Pendiente","Calificada","Cerrado","Cerrada","No asistió","No Show","Cancelada","Re agenda","Seña")
 
-REGLAS:
-- Si la descripción encaja con una clave predefinida, usá ESA CLAVE EXACTA como tipo_metrica. Ejemplo: si piden "agendas del mes" → tipo_metrica debe ser "agendas" (no "predefinida", no "agendas_del_mes", sino exactamente "agendas").
-- Si no encaja con ninguna clave predefinida, generá una fórmula custom.
-- "agendas calificadas" = leads con estado "Agendado" Y calificado=true → es CUSTOM (no existe clave predefinida para esto).
+⚠️ REGLA CRÍTICA — FUNNEL DE LEADS:
+Los leads AVANZAN de estado. Un lead agendado que luego se cerró tiene estado="Cerrado", ya NO "Agendado".
+Por eso NUNCA filtres solo por estado="Agendado" para medir leads que se agendaron — perdés todos los que ya cerraron.
+Reglas correctas:
+- "leads que llegaron a agendarse" → estado IN ["Agendado","Cerrado","Cerrada","Seña"] (incluye los que avanzaron)
+- "leads calificados" → calificado=true SIN filtrar por estado (el flag persiste cuando el lead avanza)
+- "% de agendamiento" → numerator: estado IN ["Agendado","Cerrado","Cerrada","Seña"], denominator: todos los leads
+
+REGLAS GENERALES:
+- Si la descripción encaja con una clave predefinida, usá ESA CLAVE EXACTA. Ejemplo: "agendas del mes" → tipo_metrica debe ser exactamente "agendas".
+- Si no encaja, generá fórmula custom.
 
 FORMATO si usás clave predefinida (tipo_metrica DEBE ser una de: ${validKeys}):
 {"tipo_metrica":"agendas","titulo":"Agendas del mes","meta_sugerida":20,"descripcion_calculo":"Cantidad de calls nuevas registradas en el mes"}
 
-FORMATO si usás fórmula custom de conteo:
-{"tipo_metrica":"custom","titulo":"Nombre","meta_sugerida":5,"descripcion_calculo":"Qué cuenta","formula":{"source":"leads","aggregate":"count","filters":[{"field":"estado","op":"eq","value":"Agendado"},{"field":"calificado","op":"eq","value":true}]}}
+FORMATO fórmula custom — conteo:
+{"tipo_metrica":"custom","titulo":"Leads calificados","meta_sugerida":5,"descripcion_calculo":"Leads con calificado=true","formula":{"source":"leads","aggregate":"count","filters":[{"field":"calificado","op":"eq","value":true}]}}
 
-FORMATO si usás fórmula custom de porcentaje:
-{"tipo_metrica":"custom","titulo":"% Agendamiento","meta_sugerida":20,"descripcion_calculo":"Leads agendados / total leads","formula":{"source":"leads","aggregate":"percent","numerator_filters":[{"field":"estado","op":"eq","value":"Agendado"}],"denominator_filters":[]}}
+FORMATO fórmula custom — porcentaje (ejemplo correcto de % agendamiento):
+{"tipo_metrica":"custom","titulo":"% Agendamiento","meta_sugerida":30,"descripcion_calculo":"Leads que llegaron a agendarse / total leads del mes","formula":{"source":"leads","aggregate":"percent","numerator_filters":[{"field":"estado","op":"in","values":["Agendado","Cerrado","Cerrada","Seña"]}],"denominator_filters":[]}}
 
 Si no es calculable: {"error":"No puedo calcular esto con los datos del CRM"}`;
 
