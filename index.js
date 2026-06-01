@@ -3492,6 +3492,58 @@ function _objMonthRange(mes, año) {
   return { from: start.toISOString(), to: end.toISOString() };
 }
 
+// Campos permitidos por tabla para fórmulas custom (whitelist de seguridad)
+const FORMULA_ALLOWED_FIELDS = {
+  leads:    ['estado', 'calificado', 'descalificado'],
+  calls:    ['estado'],
+  clientes: [],
+  ingresos: ['tipo', 'concepto'],
+};
+
+function _applyFormulaFilters(query, source, filters) {
+  const allowed = FORMULA_ALLOWED_FIELDS[source] || [];
+  for (const f of (filters || [])) {
+    if (!allowed.includes(f.field)) continue; // silently skip campos no permitidos
+    const vals = f.values || [f.value];
+    if      (f.op === 'eq')     query = query.eq(f.field, f.value);
+    else if (f.op === 'neq')    query = query.neq(f.field, f.value);
+    else if (f.op === 'in')     query = query.in(f.field, vals);
+    else if (f.op === 'not_in') query = query.not(f.field, 'in', `(${vals.map(v => `"${v}"`).join(',')})`);
+  }
+  return query;
+}
+
+async function executeCustomMetric(formula, clienteId, mes, año) {
+  const src = formula?.source;
+  if (!FORMULA_ALLOWED_FIELDS.hasOwnProperty(src)) return 0;
+
+  const { from, to }  = _objMonthRange(mes, año);
+  const isDateCol     = src === 'ingresos';
+  const dateField     = isDateCol ? 'fecha' : 'created_at';
+  const dateFrom      = isDateCol ? `${año}-${String(mes).padStart(2,'0')}-01` : from;
+  const dateTo        = isDateCol ? new Date(año, mes, 0).toISOString().split('T')[0] : to;
+
+  const buildBase = (filters) => {
+    let q = supabase.from(src).select('id', { count: 'exact', head: true }).eq('cliente_id', clienteId);
+    q = isDateCol ? q.gte(dateField, dateFrom).lte(dateField, dateTo) : q.gte(dateField, dateFrom).lt(dateField, dateTo);
+    return _applyFormulaFilters(q, src, filters || []);
+  };
+
+  if (formula.aggregate === 'count') {
+    const { count } = await buildBase(formula.filters);
+    return count || 0;
+  }
+  if (formula.aggregate === 'percent') {
+    const [{ count: num }, { count: den }] = await Promise.all([
+      buildBase(formula.numerator_filters),
+      buildBase(formula.denominator_filters),
+    ]);
+    if (!den) return 0;
+    return Math.round((num / den) * 100 * 10) / 10;
+  }
+  return 0;
+}
+
 const METRIC_RESOLVERS = {
   agendas: async (clienteId, mes, año) => {
     const { from, to } = _objMonthRange(mes, año);
@@ -3557,7 +3609,7 @@ const METRIC_RESOLVERS = {
   },
 };
 
-const VALID_METRIC_TYPES = Object.keys(METRIC_RESOLVERS);
+const VALID_METRIC_TYPES = [...Object.keys(METRIC_RESOLVERS), 'custom'];
 
 const METRIC_DESCRIPTIONS = {
   agendas:             'Cantidad de llamadas agendadas (nuevas calls registradas en el mes)',
@@ -3578,23 +3630,40 @@ app.post('/objectives/interpret', validateAccess, async (req, res) => {
     const { descripcion } = req.body;
     if (!descripcion?.trim()) return res.status(400).json({ error: 'Descripción requerida' });
 
-    const prompt = `Sos un asistente de CRM de ventas. El usuario quiere agregar un objetivo de seguimiento mensual.
+    const prompt = `Sos un asistente de CRM de ventas de alto ticket. El usuario quiere agregar un objetivo de seguimiento mensual.
 
 Descripción del usuario: "${descripcion.trim()}"
 
-Métricas disponibles en el sistema:
+━━━ MÉTRICAS PREDEFINIDAS (usarlas si aplican exactamente) ━━━
 ${Object.entries(METRIC_DESCRIPTIONS).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
 
-Respondé SOLO con JSON válido, sin texto adicional ni code blocks:
-{
-  "tipo_metrica": "<una de las claves de arriba que mejor coincida>",
-  "titulo": "<título corto y claro para el objetivo, máximo 60 caracteres>",
-  "meta_sugerida": <número razonable como meta, sin texto>,
-  "descripcion_calculo": "<una línea explicando cómo se calcula>"
-}
+━━━ ESTRUCTURA DEL CRM ━━━
+Tabla "leads": leads del pipeline de ventas
+  - estado: "Primer contacto" | "Descubrimiento (Problemas-Objetivos)" | "Recurso de nutrición" | "PITCH VSL CHAT" | "VSL CHAT" | "Proponer Call" | "Calendly Enviado" | "Agendado" | "Cerrado" | "Cerrada" | "Seña" | "Perdido"
+  - calificado: true/false (el lead fue calificado como apto)
+  - descalificado: true/false
 
-Si no podés mapear a ninguna métrica disponible, respondé:
-{"error": "No encontré una métrica que coincida con lo que describiste"}`;
+Tabla "calls": llamadas de venta registradas
+  - estado: "Pendiente" | "Calificada" | "Cerrado" | "Cerrada" | "No asistió" | "No Show" | "Cancelada" | "Re agenda" | "Seña"
+
+━━━ INSTRUCCIÓN ━━━
+1. Si la descripción coincide exactamente con una métrica predefinida, usala.
+2. Si no, generá una fórmula custom usando solo los campos disponibles.
+3. IMPORTANTE: "agendas calificadas" = leads con estado "Agendado" Y calificado=true (NO calls).
+
+Respondé SOLO con JSON válido, sin texto ni code blocks.
+
+Si usás métrica predefinida:
+{"tipo_metrica":"clave","titulo":"...","meta_sugerida":N,"descripcion_calculo":"..."}
+
+Si necesitás fórmula custom (count):
+{"tipo_metrica":"custom","titulo":"...","meta_sugerida":N,"descripcion_calculo":"...","formula":{"source":"leads"|"calls"|"clientes","aggregate":"count","filters":[{"field":"campo","op":"eq"|"neq"|"in"|"not_in","value":"..."}]}}
+
+Si necesitás fórmula custom (porcentaje numerador/denominador):
+{"tipo_metrica":"custom","titulo":"...","meta_sugerida":N,"descripcion_calculo":"...","formula":{"source":"leads"|"calls","aggregate":"percent","numerator_filters":[...],"denominator_filters":[]}}
+
+Para "in"/"not_in" usá "values":["v1","v2"] en lugar de "value".
+Si no podés calcular con los datos disponibles: {"error":"No puedo calcular esto con los datos del CRM"}`;
 
     const response = await _anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -3640,8 +3709,13 @@ app.get('/objectives/progress', validateAccess, async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     if (!objectives?.length) return res.json([]);
     const results = await Promise.all(objectives.map(async (obj) => {
-      const resolver = METRIC_RESOLVERS[obj.tipo_metrica];
-      const current  = resolver ? await resolver(req.cliente_id, mes, año) : 0;
+      let current = 0;
+      if (obj.tipo_metrica === 'custom' && obj.formula) {
+        current = await executeCustomMetric(obj.formula, req.cliente_id, mes, año);
+      } else {
+        const resolver = METRIC_RESOLVERS[obj.tipo_metrica];
+        current = resolver ? await resolver(req.cliente_id, mes, año) : 0;
+      }
       return {
         ...obj,
         current,
@@ -3656,11 +3730,12 @@ app.get('/objectives/progress', validateAccess, async (req, res) => {
 app.post('/objectives', validateAccess, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins pueden crear objetivos' });
-    const { titulo, tipo_metrica, meta, mes, año } = req.body;
+    const { titulo, tipo_metrica, meta, mes, año, formula } = req.body;
     if (!titulo?.trim()) return res.status(400).json({ error: 'El título es obligatorio' });
     if (!VALID_METRIC_TYPES.includes(tipo_metrica)) return res.status(400).json({ error: 'Tipo de métrica inválido' });
+    if (tipo_metrica === 'custom' && !formula?.source) return res.status(400).json({ error: 'Fórmula requerida para tipo custom' });
     if (!meta || parseFloat(meta) <= 0) return res.status(400).json({ error: 'La meta debe ser mayor a 0' });
-    const { data, error } = await supabase.from('monthly_objectives').insert({
+    const row = {
       cliente_id:   req.cliente_id,
       mes:          parseInt(mes)  || new Date().getMonth() + 1,
       año:          parseInt(año)  || new Date().getFullYear(),
@@ -3668,7 +3743,9 @@ app.post('/objectives', validateAccess, async (req, res) => {
       tipo_metrica,
       meta:         parseFloat(meta),
       created_by:   req.user.user_email,
-    }).select().single();
+    };
+    if (formula) row.formula = formula;
+    const { data, error } = await supabase.from('monthly_objectives').insert(row).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
