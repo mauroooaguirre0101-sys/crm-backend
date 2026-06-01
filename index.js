@@ -3484,6 +3484,136 @@ app.delete('/tasks/:id', validateAccess, async (req, res) => {
   }
 });
 
+// ========== OBJETIVOS MENSUALES ==========
+
+function _objMonthRange(mes, año) {
+  const start = new Date(año, mes - 1, 1);
+  const end   = new Date(año, mes, 1);
+  return { from: start.toISOString(), to: end.toISOString() };
+}
+
+const METRIC_RESOLVERS = {
+  agendas: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { count } = await supabase.from('calls').select('id', { count: 'exact', head: true })
+      .eq('cliente_id', clienteId).gte('created_at', from).lt('created_at', to);
+    return count || 0;
+  },
+  agendas_calificadas: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { count } = await supabase.from('calls').select('id', { count: 'exact', head: true })
+      .eq('cliente_id', clienteId).eq('estado', 'Calificada').gte('created_at', from).lt('created_at', to);
+    return count || 0;
+  },
+  cierres: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { count } = await supabase.from('calls').select('id', { count: 'exact', head: true })
+      .eq('cliente_id', clienteId).in('estado', ['Cerrado', 'Cerrada', 'Seña']).gte('created_at', from).lt('created_at', to);
+    return count || 0;
+  },
+  nuevos_clientes: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { count } = await supabase.from('clientes').select('id', { count: 'exact', head: true })
+      .eq('cliente_id', clienteId).gte('created_at', from).lt('created_at', to);
+    return count || 0;
+  },
+  facturacion: async (clienteId, mes, año) => {
+    const fromDate = `${año}-${String(mes).padStart(2, '0')}-01`;
+    const toDate   = new Date(año, mes, 0).toISOString().split('T')[0];
+    const { data } = await supabase.from('ingresos').select('usd')
+      .eq('cliente_id', clienteId).gte('fecha', fromDate).lte('fecha', toDate);
+    return (data || []).reduce((s, r) => s + (r.usd || 0), 0);
+  },
+  leads_generados: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { count } = await supabase.from('leads').select('id', { count: 'exact', head: true })
+      .eq('cliente_id', clienteId).gte('created_at', from).lt('created_at', to);
+    return count || 0;
+  },
+  no_shows: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { count } = await supabase.from('calls').select('id', { count: 'exact', head: true })
+      .eq('cliente_id', clienteId).in('estado', ['No asistió', 'No Show']).gte('created_at', from).lt('created_at', to);
+    return count || 0;
+  },
+};
+
+const VALID_METRIC_TYPES = Object.keys(METRIC_RESOLVERS);
+
+app.get('/objectives', validateAccess, async (req, res) => {
+  try {
+    const mes = parseInt(req.query.mes) || new Date().getMonth() + 1;
+    const año = parseInt(req.query.año) || new Date().getFullYear();
+    const { data, error } = await supabase
+      .from('monthly_objectives')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .eq('mes', mes)
+      .eq('año', año)
+      .order('created_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/objectives/progress', validateAccess, async (req, res) => {
+  try {
+    const mes = parseInt(req.query.mes) || new Date().getMonth() + 1;
+    const año = parseInt(req.query.año) || new Date().getFullYear();
+    const { data: objectives, error } = await supabase
+      .from('monthly_objectives')
+      .select('*')
+      .eq('cliente_id', req.cliente_id)
+      .eq('mes', mes)
+      .eq('año', año)
+      .order('created_at', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    if (!objectives?.length) return res.json([]);
+    const results = await Promise.all(objectives.map(async (obj) => {
+      const resolver = METRIC_RESOLVERS[obj.tipo_metrica];
+      const current  = resolver ? await resolver(req.cliente_id, mes, año) : 0;
+      return {
+        ...obj,
+        current,
+        porcentaje: obj.meta > 0 ? Math.min(100, Math.round((current / obj.meta) * 100)) : 0,
+        logrado:    current >= obj.meta,
+      };
+    }));
+    res.json(results);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/objectives', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins pueden crear objetivos' });
+    const { titulo, tipo_metrica, meta, mes, año } = req.body;
+    if (!titulo?.trim()) return res.status(400).json({ error: 'El título es obligatorio' });
+    if (!VALID_METRIC_TYPES.includes(tipo_metrica)) return res.status(400).json({ error: 'Tipo de métrica inválido' });
+    if (!meta || parseFloat(meta) <= 0) return res.status(400).json({ error: 'La meta debe ser mayor a 0' });
+    const { data, error } = await supabase.from('monthly_objectives').insert({
+      cliente_id:   req.cliente_id,
+      mes:          parseInt(mes)  || new Date().getMonth() + 1,
+      año:          parseInt(año)  || new Date().getFullYear(),
+      titulo:       titulo.trim(),
+      tipo_metrica,
+      meta:         parseFloat(meta),
+      created_by:   req.user.user_email,
+    }).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/objectives/:id', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins pueden eliminar objetivos' });
+    const { error } = await supabase.from('monthly_objectives').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ============================================================
 // 📊 WEEKLY REPORTS — Constantes (espejo de script.js frontend)
 // ============================================================
