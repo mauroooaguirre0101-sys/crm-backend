@@ -3630,49 +3630,49 @@ app.post('/objectives/interpret', validateAccess, async (req, res) => {
     const { descripcion } = req.body;
     if (!descripcion?.trim()) return res.status(400).json({ error: 'Descripción requerida' });
 
-    const prompt = `Sos un asistente de CRM de ventas de alto ticket. El usuario quiere agregar un objetivo de seguimiento mensual.
+    const validKeys = Object.keys(METRIC_DESCRIPTIONS).join(', ');
+    const prompt = `Sos un asistente de CRM. Respondé ÚNICAMENTE con un objeto JSON válido, sin texto adicional, sin markdown, sin explicaciones.
 
-Descripción del usuario: "${descripcion.trim()}"
+El usuario quiere agregar un objetivo mensual. Descripción: "${descripcion.trim()}"
 
-━━━ MÉTRICAS PREDEFINIDAS (usarlas si aplican exactamente) ━━━
-${Object.entries(METRIC_DESCRIPTIONS).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
+CLAVES PREDEFINIDAS DISPONIBLES (usar exactamente estas cadenas de texto como valor de tipo_metrica):
+${Object.entries(METRIC_DESCRIPTIONS).map(([k, v]) => `  "${k}" → ${v}`).join('\n')}
 
-━━━ ESTRUCTURA DEL CRM ━━━
-Tabla "leads": leads del pipeline de ventas
-  - estado: "Primer contacto" | "Descubrimiento (Problemas-Objetivos)" | "Recurso de nutrición" | "PITCH VSL CHAT" | "VSL CHAT" | "Proponer Call" | "Calendly Enviado" | "Agendado" | "Cerrado" | "Cerrada" | "Seña" | "Perdido"
-  - calificado: true/false (el lead fue calificado como apto)
-  - descalificado: true/false
+TABLAS DEL CRM (para fórmulas custom):
+  leads: estado ("Agendado","Cerrado","Cerrada","Seña","Perdido","Primer contacto","Calificado","Descubrimiento (Problemas-Objetivos)","Recurso de nutrición","PITCH VSL CHAT","VSL CHAT","Proponer Call","Calendly Enviado"), calificado (boolean), descalificado (boolean)
+  calls: estado ("Pendiente","Calificada","Cerrado","Cerrada","No asistió","No Show","Cancelada","Re agenda","Seña")
 
-Tabla "calls": llamadas de venta registradas
-  - estado: "Pendiente" | "Calificada" | "Cerrado" | "Cerrada" | "No asistió" | "No Show" | "Cancelada" | "Re agenda" | "Seña"
+REGLAS:
+- Si la descripción encaja con una clave predefinida, usá ESA CLAVE EXACTA como tipo_metrica. Ejemplo: si piden "agendas del mes" → tipo_metrica debe ser "agendas" (no "predefinida", no "agendas_del_mes", sino exactamente "agendas").
+- Si no encaja con ninguna clave predefinida, generá una fórmula custom.
+- "agendas calificadas" = leads con estado "Agendado" Y calificado=true → es CUSTOM (no existe clave predefinida para esto).
 
-━━━ INSTRUCCIÓN ━━━
-1. Si la descripción coincide exactamente con una métrica predefinida, usala.
-2. Si no, generá una fórmula custom usando solo los campos disponibles.
-3. IMPORTANTE: "agendas calificadas" = leads con estado "Agendado" Y calificado=true (NO calls).
+FORMATO si usás clave predefinida (tipo_metrica DEBE ser una de: ${validKeys}):
+{"tipo_metrica":"agendas","titulo":"Agendas del mes","meta_sugerida":20,"descripcion_calculo":"Cantidad de calls nuevas registradas en el mes"}
 
-Respondé SOLO con JSON válido, sin texto ni code blocks.
+FORMATO si usás fórmula custom de conteo:
+{"tipo_metrica":"custom","titulo":"Nombre","meta_sugerida":5,"descripcion_calculo":"Qué cuenta","formula":{"source":"leads","aggregate":"count","filters":[{"field":"estado","op":"eq","value":"Agendado"},{"field":"calificado","op":"eq","value":true}]}}
 
-Si usás métrica predefinida:
-{"tipo_metrica":"clave","titulo":"...","meta_sugerida":N,"descripcion_calculo":"..."}
+FORMATO si usás fórmula custom de porcentaje:
+{"tipo_metrica":"custom","titulo":"% Agendamiento","meta_sugerida":20,"descripcion_calculo":"Leads agendados / total leads","formula":{"source":"leads","aggregate":"percent","numerator_filters":[{"field":"estado","op":"eq","value":"Agendado"}],"denominator_filters":[]}}
 
-Si necesitás fórmula custom (count):
-{"tipo_metrica":"custom","titulo":"...","meta_sugerida":N,"descripcion_calculo":"...","formula":{"source":"leads"|"calls"|"clientes","aggregate":"count","filters":[{"field":"campo","op":"eq"|"neq"|"in"|"not_in","value":"..."}]}}
-
-Si necesitás fórmula custom (porcentaje numerador/denominador):
-{"tipo_metrica":"custom","titulo":"...","meta_sugerida":N,"descripcion_calculo":"...","formula":{"source":"leads"|"calls","aggregate":"percent","numerator_filters":[...],"denominator_filters":[]}}
-
-Para "in"/"not_in" usá "values":["v1","v2"] en lugar de "value".
-Si no podés calcular con los datos disponibles: {"error":"No puedo calcular esto con los datos del CRM"}`;
+Si no es calculable: {"error":"No puedo calcular esto con los datos del CRM"}`;
 
     const response = await _anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 256,
+      max_tokens: 512,
       messages: [{ role: 'user', content: prompt }],
     });
 
     const raw  = response.content[0].text.trim().replace(/```json?\n?/g, '').replace(/```/g, '').trim();
     const json = JSON.parse(raw);
+
+    // Validar que tipo_metrica sea una clave conocida
+    if (!json.error && json.tipo_metrica && !VALID_METRIC_TYPES.includes(json.tipo_metrica)) {
+      console.warn(`[Objectives/Interpret] AI devolvió tipo_metrica inválido: "${json.tipo_metrica}". Raw: ${raw}`);
+      return res.status(422).json({ error: `La IA no identificó correctamente la métrica (devolvió "${json.tipo_metrica}"). Intentá describir con más detalle cómo calcularlo.` });
+    }
+
     res.json(json);
   } catch (err) {
     res.status(422).json({ error: 'No pude interpretar la descripción. Intentá ser más específico.' });
