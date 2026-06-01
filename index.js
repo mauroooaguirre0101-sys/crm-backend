@@ -3536,9 +3536,79 @@ const METRIC_RESOLVERS = {
       .eq('cliente_id', clienteId).in('estado', ['No asistió', 'No Show']).gte('created_at', from).lt('created_at', to);
     return count || 0;
   },
+  show_rate: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { data } = await supabase.from('calls').select('estado')
+      .eq('cliente_id', clienteId).gte('created_at', from).lt('created_at', to);
+    const calls = data || [];
+    if (!calls.length) return 0;
+    const shows = calls.filter(c => !['No asistió', 'No Show', 'Cancelada', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
+    return Math.round((shows / calls.length) * 100 * 10) / 10;
+  },
+  close_rate: async (clienteId, mes, año) => {
+    const { from, to } = _objMonthRange(mes, año);
+    const { data } = await supabase.from('calls').select('estado')
+      .eq('cliente_id', clienteId).gte('created_at', from).lt('created_at', to);
+    const calls = data || [];
+    const shows   = calls.filter(c => !['No asistió', 'No Show', 'Cancelada', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
+    const cierres = calls.filter(c => ['Cerrado', 'Cerrada', 'Seña'].includes(c.estado)).length;
+    if (!shows) return 0;
+    return Math.round((cierres / shows) * 100 * 10) / 10;
+  },
 };
 
 const VALID_METRIC_TYPES = Object.keys(METRIC_RESOLVERS);
+
+const METRIC_DESCRIPTIONS = {
+  agendas:             'Cantidad de llamadas agendadas (nuevas calls registradas en el mes)',
+  agendas_calificadas: 'Cantidad de llamadas con estado Calificada en el mes',
+  cierres:             'Cantidad de ventas cerradas (calls Cerrado, Cerrada o Seña) en el mes',
+  nuevos_clientes:     'Cantidad de nuevos clientes agregados al CRM en el mes',
+  facturacion:         'Suma del monto cobrado en USD (ingresos del mes)',
+  leads_generados:     'Cantidad de leads nuevos generados en el mes',
+  no_shows:            'Cantidad de personas que no asistieron a su llamada en el mes',
+  show_rate:           'Porcentaje de shows sobre agendas: (Shows / Total agendas) × 100',
+  close_rate:          'Porcentaje de cierres sobre shows: (Cierres / Shows) × 100',
+};
+
+app.post('/objectives/interpret', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada' });
+    const { descripcion } = req.body;
+    if (!descripcion?.trim()) return res.status(400).json({ error: 'Descripción requerida' });
+
+    const prompt = `Sos un asistente de CRM de ventas. El usuario quiere agregar un objetivo de seguimiento mensual.
+
+Descripción del usuario: "${descripcion.trim()}"
+
+Métricas disponibles en el sistema:
+${Object.entries(METRIC_DESCRIPTIONS).map(([k, v]) => `- ${k}: ${v}`).join('\n')}
+
+Respondé SOLO con JSON válido, sin texto adicional ni code blocks:
+{
+  "tipo_metrica": "<una de las claves de arriba que mejor coincida>",
+  "titulo": "<título corto y claro para el objetivo, máximo 60 caracteres>",
+  "meta_sugerida": <número razonable como meta, sin texto>,
+  "descripcion_calculo": "<una línea explicando cómo se calcula>"
+}
+
+Si no podés mapear a ninguna métrica disponible, respondé:
+{"error": "No encontré una métrica que coincida con lo que describiste"}`;
+
+    const response = await _anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 256,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const raw  = response.content[0].text.trim().replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    const json = JSON.parse(raw);
+    res.json(json);
+  } catch (err) {
+    res.status(422).json({ error: 'No pude interpretar la descripción. Intentá ser más específico.' });
+  }
+});
 
 app.get('/objectives', validateAccess, async (req, res) => {
   try {
