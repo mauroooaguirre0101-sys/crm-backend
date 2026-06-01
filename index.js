@@ -1245,9 +1245,11 @@ app.get('/metrics', async (req, res) => {
       prevEnd   = new Date(curStart);
       prevStart = new Date(curStart); prevStart.setUTCDate(prevStart.getUTCDate() - 7);
     } else {
-      curStart  = new Date(todayUTC); curStart.setUTCDate(todayUTC.getUTCDate() - 30);
-      prevEnd   = new Date(curStart);
-      prevStart = new Date(curStart); prevStart.setUTCDate(prevStart.getUTCDate() - 30);
+      // range='month' → mes calendario actual vs mes anterior
+      const yr = todayUTC.getUTCFullYear(), m = todayUTC.getUTCMonth();
+      curStart  = new Date(Date.UTC(yr, m, 1));
+      prevEnd   = new Date(Date.UTC(yr, m, 1));
+      prevStart = new Date(Date.UTC(yr, m - 1, 1));
     }
 
     const curStartISO  = curStart.toISOString();
