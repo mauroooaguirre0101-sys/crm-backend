@@ -419,12 +419,18 @@ app.get('/leads', validateAccess, async (req, res) => {
       q = q.gte('created_at', new Date(yr, m, 1).toISOString())
            .lte('created_at', new Date(yr, m + 1, 0, 23, 59, 59).toISOString());
     } else if (period) {
-      const offsets = { dia: 0, semana: 7, mes: 30, año: 365 };
-      const days = offsets[period];
-      if (days !== undefined) {
-        const from = new Date(now);
-        if (days === 0) from.setHours(0, 0, 0, 0);
-        else from.setDate(now.getDate() - days);
+      if (period === 'dia') {
+        const from = new Date(now); from.setHours(0, 0, 0, 0);
+        q = q.gte('created_at', from.toISOString());
+      } else if (period === 'semana') {
+        const from = new Date(now); from.setDate(now.getDate() - 7); from.setHours(0, 0, 0, 0);
+        q = q.gte('created_at', from.toISOString());
+      } else if (period === 'mes') {
+        const from = new Date(now.getFullYear(), now.getMonth(), 1);
+        const to   = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+        q = q.gte('created_at', from.toISOString()).lt('created_at', to.toISOString());
+      } else if (period === 'año') {
+        const from = new Date(now); from.setFullYear(now.getFullYear() - 1); from.setHours(0, 0, 0, 0);
         q = q.gte('created_at', from.toISOString());
       }
     }
@@ -1405,6 +1411,63 @@ app.delete('/egresos/:id', validateAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+// ========== APODOS DE USUARIOS Y ALIASES DE CLIENTES ==========
+// Sin middleware validateAccess: solo requieren x-user-email válido
+
+app.get('/user-nicknames', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!email) return res.status(400).json({ error: 'Falta x-user-email' });
+    const { data, error } = await supabase.from('user_nicknames').select('user_email,nickname');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/user-nicknames', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!email) return res.status(400).json({ error: 'Falta x-user-email' });
+    const { nickname } = req.body;
+    if (!nickname?.trim()) return res.status(400).json({ error: 'El apodo no puede estar vacío' });
+    const { error } = await supabase.from('user_nicknames')
+      .upsert({ user_email: email, nickname: nickname.trim(), updated_at: new Date().toISOString() }, { onConflict: 'user_email' });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/client-aliases', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!email) return res.status(400).json({ error: 'Falta x-user-email' });
+    const { data, error } = await supabase.from('client_aliases').select('cliente_id,alias');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/client-aliases', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!email) return res.status(400).json({ error: 'Falta x-user-email' });
+    const { cliente_id, alias } = req.body;
+    if (!cliente_id) return res.status(400).json({ error: 'Falta cliente_id' });
+    // Verificar que el usuario tiene acceso a ese cliente
+    const { data: access } = await supabase.from('user_clientes')
+      .select('user_email').eq('user_email', email).eq('cliente_id', cliente_id).maybeSingle();
+    if (!access) return res.status(403).json({ error: 'Sin acceso a este cliente' });
+    if (!alias?.trim()) {
+      await supabase.from('client_aliases').delete().eq('cliente_id', cliente_id);
+    } else {
+      const { error } = await supabase.from('client_aliases')
+        .upsert({ cliente_id, alias: alias.trim(), updated_at: new Date().toISOString() }, { onConflict: 'cliente_id' });
+      if (error) return res.status(500).json({ error: error.message });
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ===============================
 // 🔥 ACTIVITY LOG
