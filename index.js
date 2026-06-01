@@ -787,6 +787,27 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       }
     }
 
+    // Persistir calificado=true en el lead cuando la call se marca como Calificada
+    // El flag debe sobrevivir aunque el lead luego avance a Cerrado
+    if (estado === 'Calificada') {
+      let leadId = null;
+      if (callData.instagram) {
+        const { data: m } = await supabase.from('leads').select('id')
+          .ilike('instagram', callData.instagram).eq('cliente_id', req.cliente_id)
+          .limit(1).maybeSingle();
+        if (m) leadId = m.id;
+      }
+      if (!leadId && callData.nombre && callData.nombre !== 'Sin nombre') {
+        const { data: m } = await supabase.from('leads').select('id')
+          .ilike('nombre', callData.nombre).eq('cliente_id', req.cliente_id)
+          .limit(1).maybeSingle();
+        if (m) leadId = m.id;
+      }
+      if (leadId) {
+        await supabase.from('leads').update({ calificado: true }).eq('id', leadId);
+      }
+    }
+
     res.json({ ok: true });
 
   } catch (err) {
@@ -3602,8 +3623,11 @@ const METRIC_RESOLVERS = {
     const { data } = await supabase.from('calls').select('estado')
       .eq('cliente_id', clienteId).gte('created_at', from).lt('created_at', to);
     const calls = data || [];
-    const shows   = calls.filter(c => !['No asistió', 'No Show', 'Cancelada', 'Re agenda', 'Pendiente'].includes(c.estado)).length;
-    const cierres = calls.filter(c => ['Cerrado', 'Cerrada', 'Seña'].includes(c.estado)).length;
+    // 'Cierre' y 'Cierre PIF' son los estados reales de la call; el lead queda como 'Cerrado'
+    const CIERRE_ESTADOS = ['Cerrado', 'Cerrada', 'Seña', 'Cierre', 'Cierre PIF'];
+    const NO_SHOW_ESTADOS = ['No asistió', 'No Show', 'Cancelada', 'Re agenda', 'Pendiente'];
+    const shows   = calls.filter(c => !NO_SHOW_ESTADOS.includes(c.estado)).length;
+    const cierres = calls.filter(c => CIERRE_ESTADOS.includes(c.estado)).length;
     if (!shows) return 0;
     return Math.round((cierres / shows) * 100 * 10) / 10;
   },
@@ -3642,13 +3666,15 @@ TABLAS DEL CRM (para fórmulas custom):
   leads: estado ("Agendado","Cerrado","Cerrada","Seña","Perdido","Primer contacto","Descubrimiento (Problemas-Objetivos)","Recurso de nutrición","PITCH VSL CHAT","VSL CHAT","Proponer Call","Calendly Enviado"), calificado (boolean), descalificado (boolean)
   calls: estado ("Pendiente","Calificada","Cerrado","Cerrada","No asistió","No Show","Cancelada","Re agenda","Seña")
 
-⚠️ REGLA CRÍTICA — FUNNEL DE LEADS:
+⚠️ REGLAS CRÍTICAS — FUNNEL DE LEADS:
 Los leads AVANZAN de estado. Un lead agendado que luego se cerró tiene estado="Cerrado", ya NO "Agendado".
-Por eso NUNCA filtres solo por estado="Agendado" para medir leads que se agendaron — perdés todos los que ya cerraron.
-Reglas correctas:
-- "leads que llegaron a agendarse" → estado IN ["Agendado","Cerrado","Cerrada","Seña"] (incluye los que avanzaron)
-- "leads calificados" → calificado=true SIN filtrar por estado (el flag persiste cuando el lead avanza)
-- "% de agendamiento" → numerator: estado IN ["Agendado","Cerrado","Cerrada","Seña"], denominator: todos los leads
+NUNCA filtres solo por estado="Agendado" — perdés todos los que ya avanzaron.
+
+Reglas correctas para fórmulas basadas en leads:
+- "leads que llegaron a agendarse" → estado IN ["Agendado","Cerrado","Cerrada","Seña","Perdido Post Call","Seguimiento Post Call","Re agendado","No Show"]
+- "leads calificados" → calificado=true SIN filtrar por estado (el flag persiste)
+- "% de agendamiento" → numerator: estado IN ["Agendado","Cerrado","Cerrada","Seña","Perdido Post Call","Seguimiento Post Call","Re agendado","No Show"], denominator: todos los leads
+- "% de close rate" o "cierres sobre shows" → numerator: estado IN ["Cerrado","Cerrada","Seña"], denominator: estado IN ["Cerrado","Cerrada","Seña","Perdido Post Call","Seguimiento Post Call","Re agendado","No Show"] (leads que llegaron a tener una llamada, excluyendo los que nunca asistieron sin agendar)
 
 REGLAS GENERALES:
 - Si la descripción encaja con una clave predefinida, usá ESA CLAVE EXACTA. Ejemplo: "agendas del mes" → tipo_metrica debe ser exactamente "agendas".
@@ -3753,6 +3779,27 @@ app.post('/objectives', validateAccess, async (req, res) => {
     };
     if (formula) row.formula = formula;
     const { data, error } = await supabase.from('monthly_objectives').insert(row).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/objectives/:id', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins pueden editar objetivos' });
+    const { titulo, meta } = req.body;
+    const updates = {};
+    if (titulo !== undefined) {
+      if (!titulo.trim()) return res.status(400).json({ error: 'El título no puede estar vacío' });
+      updates.titulo = titulo.trim();
+    }
+    if (meta !== undefined) {
+      if (parseFloat(meta) <= 0) return res.status(400).json({ error: 'La meta debe ser mayor a 0' });
+      updates.meta = parseFloat(meta);
+    }
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nada que actualizar' });
+    const { data, error } = await supabase.from('monthly_objectives').update(updates)
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id).select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
