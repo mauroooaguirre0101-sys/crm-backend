@@ -5575,8 +5575,10 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   console.log(`[GHL Parser] resolved calendarName="${calendarName || '(none)'}"`);
 
   // ── estado: event-type override > appointmentStatus ────────────────────────
+  // GHL typos "appointmentStatus" as "appoinmentStatus" (missing 't') in calendar object
   const estadoByEvent = _ghlProvider.mapEventTypeToEstado(eventType);
-  const estado = estadoByEvent || _ghlProvider.mapAppointmentStatus(appt.appointmentStatus);
+  const apptStatus = appt.appointmentStatus || appt.appoinmentStatus || '';
+  const estado = estadoByEvent || _ghlProvider.mapAppointmentStatus(apptStatus);
 
   // Extract qualification answers early so they're available for both UPDATE and INSERT
   const qualAnswers  = _ghlProvider.extractQualificationAnswers(rawPayload);

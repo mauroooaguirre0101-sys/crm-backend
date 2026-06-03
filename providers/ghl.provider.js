@@ -151,19 +151,27 @@ function normalizeWebhookPayload(body) {
     || null;
 
   // Infer event type if ANY GHL workflow signal is present and no explicit type
+  // GHL typos "appointmentStatus" as "appoinmentStatus" (missing 't') in calendar object
   let inferred = false;
   if (!type && (body.calendar || body.workflow || body.contact || body.contact_id || body.contactId || body.triggerData)) {
-    const rawStatus = (body.appointmentStatus || '').toLowerCase();
+    const rawStatus = (
+      body.appointmentStatus
+      || body.calendar?.appoinmentStatus
+      || body.calendar?.appointmentStatus
+      || ''
+    ).toLowerCase();
     type = (rawStatus === 'cancelled' || rawStatus === 'cancel') ? 'AppointmentCancelled' : 'AppointmentCreate';
     inferred = true;
   }
 
   // Appointment ID — top-level OR nested in body.calendar
+  // Prefer calendar.appointmentId over calendar.id — calendar.id is the booking-page template ID
+  // shared across all appointments in that calendar, NOT a unique per-appointment identifier.
   const appointmentId = body.id
     || body.appointmentId
     || body.appointment_id
     || body.resourceId
-    || (body.calendar && (body.calendar.id || body.calendar.appointmentId))
+    || (body.calendar && (body.calendar.appointmentId || body.calendar.id))
     || null;
 
   // Contact ID — top-level OR nested in body.contact
