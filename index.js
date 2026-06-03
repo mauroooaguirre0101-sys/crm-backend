@@ -5544,7 +5544,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     || rawPayload.phone || rawPayload.phone_raw || rawPayload.contact?.phone || '';
   console.log(`[GHL Parser] resolved phone=${telefono || '(none)'}`);
 
-  const UPDATE_TYPES = new Set(['AppointmentUpdate','AppointmentRescheduled','AppointmentConfirmed','AppointmentNoShow','AppointmentCompleted']);
+  const UPDATE_TYPES = new Set(['AppointmentUpdate','AppointmentCancelled','AppointmentRescheduled','AppointmentConfirmed','AppointmentNoShow','AppointmentCompleted']);
   const isUpdate = UPDATE_TYPES.has(eventType);
   const isDelete = eventType === 'AppointmentDelete';
   const meetingLink = (appt.address && appt.address.startsWith('http')) ? appt.address : null;
@@ -5636,8 +5636,8 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     }
   }
 
-  if (isDelete) {
-    console.log(`[GHL UpsertCall] AppointmentDelete — no existing call for apptId=${apptId}, skipping`);
+  if (isDelete || estado === 'Cancelada') {
+    console.log(`[GHL UpsertCall] ${eventType} (estado=${estado}) — no existing call for apptId=${apptId}, skipping INSERT`);
     return null;
   }
 
@@ -5815,7 +5815,7 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
 
     console.log(`[GHL Webhook] Processing eventType=${eventType}${inferred ? ' (inferred)' : ''} for cliente_id=${cliente_id}`);
 
-    if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'].includes(eventType)) {
+    if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentCancelled'].includes(eventType)) {
       console.log(`[GHL Webhook] Skipping unhandled event type: ${eventType}`);
       await _ghlSaveRawPayload({ cliente_id, call_id: null, eventType, inferred, rawBody, contact: null, calendar: null });
       return res.json({ ok: true, info: `Unhandled: ${eventType}` });

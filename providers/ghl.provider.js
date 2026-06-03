@@ -150,10 +150,11 @@ function normalizeWebhookPayload(body) {
     || (body.event && _normalizeEventType(body.event))
     || null;
 
-  // Infer AppointmentCreate if ANY GHL workflow signal is present and no explicit type
+  // Infer event type if ANY GHL workflow signal is present and no explicit type
   let inferred = false;
   if (!type && (body.calendar || body.workflow || body.contact || body.contact_id || body.contactId || body.triggerData)) {
-    type = 'AppointmentCreate';
+    const rawStatus = (body.appointmentStatus || '').toLowerCase();
+    type = (rawStatus === 'cancelled' || rawStatus === 'cancel') ? 'AppointmentCancelled' : 'AppointmentCreate';
     inferred = true;
   }
 
@@ -189,6 +190,7 @@ function _normalizeEventType(event) {
     'appointment_created':      'AppointmentCreate',
     'appointment_updated':      'AppointmentUpdate',
     'appointment_deleted':      'AppointmentDelete',
+    'appointment_cancelled':    'AppointmentCancelled',
     'appointment_rescheduled':  'AppointmentRescheduled',
     'appointment_confirmed':    'AppointmentConfirmed',
     'appointment_no_show':      'AppointmentNoShow',
