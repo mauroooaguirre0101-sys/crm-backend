@@ -5875,7 +5875,7 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
 
     console.log(`[GHL Webhook] Processing eventType=${eventType}${inferred ? ' (inferred)' : ''} for cliente_id=${cliente_id}`);
 
-    if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentCancelled'].includes(eventType)) {
+    if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentCancelled', 'AppointmentRescheduled'].includes(eventType)) {
       console.log(`[GHL Webhook] Skipping unhandled event type: ${eventType}`);
       await _ghlSaveRawPayload({ cliente_id, call_id: null, eventType, inferred, rawBody, contact: null, calendar: null });
       return res.json({ ok: true, info: `Unhandled: ${eventType}` });
