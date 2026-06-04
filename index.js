@@ -5891,8 +5891,8 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
     if (embeddedCalendar) {
       apptPayload = {
         ...embeddedCalendar,
-        appointmentId: embeddedCalendar.id || embeddedCalendar.appointmentId || appointmentId,
-        id:            embeddedCalendar.id || appointmentId,
+        appointmentId: embeddedCalendar.appointmentId || embeddedCalendar.id || appointmentId,
+        id:            embeddedCalendar.appointmentId || embeddedCalendar.id || appointmentId,
       };
       console.log(`[GHL Webhook] Appt source: EMBEDDED calendar → id=${apptPayload.id} title="${apptPayload.title || '—'}" startTime=${apptPayload.startTime || '—'} status=${apptPayload.appointmentStatus || '—'}`);
     } else {
