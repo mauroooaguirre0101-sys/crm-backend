@@ -5642,6 +5642,59 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     return null;
   }
 
+  // ── Reschedule detection ──────────────────────────────────────────────────
+  // GHL has no native rescheduled event — it cancels the old appointment and
+  // creates a new one with a different appointmentId. Detect reschedules by
+  // finding an existing pending GHL call from the same contact.
+  // Match: instagram (primary) → email (fallback). Never match by name.
+  if (eventType === 'AppointmentCreate') {
+    const ACTIVE_ESTADOS = ['Pendiente', 'Agendado'];
+    let rescheduleMatches = null;
+
+    if (instagram) {
+      const { data } = await supabase.from('calls')
+        .select('id, fecha_llamada, provider_event_id')
+        .eq('cliente_id', cliente_id).eq('origen', 'GHL').eq('instagram', instagram)
+        .in('estado', ACTIVE_ESTADOS);
+      rescheduleMatches = data;
+      console.log(`[GHL Reschedule] instagram="${instagram}" active matches=${rescheduleMatches?.length ?? 0}`);
+    } else if (email) {
+      const { data } = await supabase.from('calls')
+        .select('id, fecha_llamada, provider_event_id')
+        .eq('cliente_id', cliente_id).eq('origen', 'GHL').eq('email', email)
+        .in('estado', ACTIVE_ESTADOS);
+      rescheduleMatches = data;
+      console.log(`[GHL Reschedule] email="${email}" active matches=${rescheduleMatches?.length ?? 0}`);
+    } else {
+      console.log(`[GHL Reschedule] No instagram or email — skipping reschedule detection`);
+    }
+
+    if (rescheduleMatches?.length === 1) {
+      const target = rescheduleMatches[0];
+      console.log(`[GHL Reschedule] Exactly 1 active call found id=${target.id} — updating as reagenda`);
+      const patch = {
+        estado:            'Re agenda',
+        fecha_llamada:     appt.startTime   || null,
+        provider_event_id: apptId           || null,
+        ...(closer       && { closer }),
+        ...(calendarName && { calendar_name: calendarName }),
+        ...(meetingLink  && { link_llamada: meetingLink }),
+        ...(preguntasCalificacion && { preguntas_calificacion: preguntasCalificacion }),
+      };
+      const { error: reErr } = await supabase.from('calls')
+        .update(patch).eq('id', target.id).eq('cliente_id', cliente_id);
+      if (reErr) {
+        console.error(`[GHL Reschedule] ❌ Update failed: ${reErr.message} — falling through to INSERT`);
+      } else {
+        console.log(`[GHL Reschedule] ✓ id=${target.id} → "Re agenda" apptId=${apptId} newTime=${appt.startTime}`);
+        return target.id;
+      }
+    } else if (rescheduleMatches?.length > 1) {
+      console.log(`[GHL Reschedule] ${rescheduleMatches.length} active calls found — creating new call`);
+    }
+    // length === 0 or null: fall through to normal INSERT
+  }
+
   // Count existing calls for this instagram to set numero_llamada
   let numero_llamada = 1;
   if (instagram) {
