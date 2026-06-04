@@ -858,14 +858,21 @@ app.post('/lead', validateAccess, async (req, res) => {
   try {
     // GHL Custom Webhook sends fields inside customData — fall back to top-level for direct calls
     const src = req.body?.customData || req.body;
-    const { nombre, instagram, mensaje, origen, tipo, etiqueta } = src;
+    const { nombre, instagram: instagramRaw, mensaje, origen, tipo, etiqueta } = src;
+
+    // Normalize instagram: strip leading @, lowercase
+    const instagram = (instagramRaw || '').replace(/^@/, '').toLowerCase().trim() || null;
 
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
-    const nombreLimpio =
-      nombre && !nombre.includes('{{') ? nombre : 'Sin nombre';
+    // nombre: customData.nombre → req.body.full_name → req.body.first_name → 'Sin nombre'
+    const rawNombre = nombre
+      || req.body.full_name
+      || [req.body.first_name, req.body.last_name].filter(Boolean).join(' ').trim()
+      || '';
+    const nombreLimpio = rawNombre && !rawNombre.includes('{{') ? rawNombre : 'Sin nombre';
 
     const tipoFinal = tipo || 'comentario';
     const ALLOWED_ORIGEN = ['Inbound', 'Outbound'];
