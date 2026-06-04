@@ -6278,6 +6278,20 @@ app.post('/ghl/register-native-webhook', async (req, res) => {
   }
 });
 
+// GET /ghl/contact-debug/:contactId — fetch raw GHL contact for field inspection (holding-only, temporary)
+app.get('/ghl/contact-debug/:contactId', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+  try {
+    const apiToken = process.env.GHL_API_KEY;
+    if (!apiToken) return res.status(500).json({ error: 'GHL_API_KEY not set' });
+    const contact = await _ghlProvider.getContact(apiToken, req.params.contactId);
+    res.json({ contact });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /ghl/debug — GHL pipeline debug (holding-only)
 app.get('/ghl/debug', async (req, res) => {
   const email = req.headers['x-user-email'];
