@@ -886,7 +886,7 @@ app.post('/lead', validateAccess, async (req, res) => {
       const prev = Array.isArray(existing.etiquetas) && existing.etiquetas.length
         ? existing.etiquetas
         : (existing.etiqueta ? [existing.etiqueta] : []);
-      const newEtiquetas = etiquetaFinal ? [...prev, etiquetaFinal] : prev;
+      const newEtiquetas = etiquetaFinal && !prev.includes(etiquetaFinal) ? [...prev, etiquetaFinal] : prev;
 
       const { error: updateError } = await supabase
         .from('leads')
