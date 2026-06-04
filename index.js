@@ -356,7 +356,7 @@ app.get('/', (req, res) => {
 // ===============================
 // Fields returned for the stats cache (leadsCache) — excludes large text blobs
 const LEADS_LITE_FIELDS = [
-  'id','estado','calificado','descalificado','tipo','origen',
+  'id','estado','estado_anterior','calificado','descalificado','tipo','origen',
   'created_at','updated_at','estado_updated_at',
   'etiqueta','etiquetas','nombre','instagram',
   'source','seguimientos','show','respondio_seguimiento_4',
