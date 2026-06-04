@@ -5679,6 +5679,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
       console.log(`[GHL Reschedule] Exactly 1 active call found id=${target.id} — updating as reagenda`);
       const patch = {
         estado:            'Re agenda',
+        reagendada:        true,
         fecha_llamada:     appt.startTime   || null,
         provider_event_id: apptId           || null,
         ...(closer       && { closer }),
