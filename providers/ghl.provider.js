@@ -19,7 +19,13 @@ async function _apiCall(method, path, body, accessToken) {
   if (body) opts.body = JSON.stringify(body);
   const res  = await fetch(`${GHL_API}${path}`, opts);
   if (res.status === 204) return null;
-  const data = await res.json();
+  const text = await res.text();
+  if (!text) return null;
+  let data;
+  try { data = JSON.parse(text); } catch (e) {
+    if (!res.ok) throw new Error(`GHL ${method} ${path} [${res.status}]: ${text.slice(0, 400)}`);
+    return null;
+  }
   if (!res.ok) throw new Error(`GHL ${method} ${path} [${res.status}]: ${JSON.stringify(data).slice(0, 400)}`);
   return data;
 }

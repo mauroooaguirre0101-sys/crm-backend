@@ -6250,7 +6250,9 @@ app.post('/ghl/register-native-webhook', async (req, res) => {
       } catch (e) { console.warn('[GHL Native Webhook] Could not delete old webhook:', e.message); }
     }
 
+    console.log(`[GHL Native Webhook] Creating subscription: locationId=${locationId} url=${webhookUrl}`);
     const wh = await _ghlProvider.createWebhookSubscription(accessToken, locationId, webhookUrl);
+    console.log(`[GHL Native Webhook] GHL response: ${JSON.stringify(wh)}`);
     const webhookId = wh?.id || wh?.webhookId || null;
     console.log(`[GHL Native Webhook] ✓ Created webhook id=${webhookId} url=${webhookUrl}`);
 
