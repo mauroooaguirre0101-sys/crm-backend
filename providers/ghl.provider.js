@@ -20,7 +20,10 @@ async function _apiCall(method, path, body, accessToken) {
   const res  = await fetch(`${GHL_API}${path}`, opts);
   if (res.status === 204) return null;
   const text = await res.text();
-  if (!text) return null;
+  if (!text) {
+    if (!res.ok) throw new Error(`GHL ${method} ${path} [${res.status}]: (empty response)`);
+    return null;
+  }
   let data;
   try { data = JSON.parse(text); } catch (e) {
     if (!res.ok) throw new Error(`GHL ${method} ${path} [${res.status}]: ${text.slice(0, 400)}`);
