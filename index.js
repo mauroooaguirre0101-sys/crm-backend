@@ -856,7 +856,9 @@ app.delete('/call/:id', validateAccess, async (req, res) => {
 app.post('/lead', validateAccess, async (req, res) => {
   console.log(`[/lead] body: ${JSON.stringify(req.body)}`);
   try {
-    const { nombre, instagram, mensaje, origen, tipo, etiqueta } = req.body;
+    // GHL Custom Webhook sends fields inside customData — fall back to top-level for direct calls
+    const src = req.body?.customData || req.body;
+    const { nombre, instagram, mensaje, origen, tipo, etiqueta } = src;
 
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
