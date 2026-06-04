@@ -6228,29 +6228,25 @@ app.post('/ghl/register-native-webhook', async (req, res) => {
   if (!cliente_id) return res.status(400).json({ error: 'Missing cliente_id' });
 
   try {
-    const { data: conn, error: connErr } = await supabase
-      .from('calendar_integrations')
-      .select('access_token, refresh_token, token_expires_at, webhook_token')
-      .eq('negocio_id', cliente_id).eq('provider', 'ghl').maybeSingle();
-    if (connErr || !conn) return res.status(404).json({ error: 'GHL connection not found for this cliente_id' });
+    const conn = await _getGhlToken(cliente_id);
+    if (!conn) return res.status(404).json({ error: 'GHL connection not found for this cliente_id' });
 
-    const { accessToken } = await _ghlProvider.ensureFreshToken({ ...conn, negocio_id: cliente_id });
+    const accessToken = conn.access_token;
+    if (!accessToken) return res.status(500).json({ error: 'No access token available — reconnect GHL' });
 
     // locationId: use env var (Private Integration) as source of truth
     const locationId = process.env.GHL_LOCATION_ID;
     if (!locationId) return res.status(500).json({ error: 'GHL_LOCATION_ID env var not set' });
 
     const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
-    const webhookUrl = `${backendUrl}/webhooks/ghl?t=${conn.webhook_token}`;
+    const webhookToken = conn.webhook_token || _ghlProvider.generateWebhookToken();
+    const webhookUrl = `${backendUrl}/webhooks/ghl?t=${webhookToken}`;
 
-    // Delete existing webhook if any
-    const { data: existing } = await supabase
-      .from('calendar_integrations').select('webhook_id')
-      .eq('negocio_id', cliente_id).eq('provider', 'ghl').maybeSingle();
-    if (existing?.webhook_id) {
+    // Delete existing native webhook if any
+    if (conn.webhook_id) {
       try {
-        await _ghlProvider.deleteWebhookSubscription(accessToken, existing.webhook_id);
-        console.log(`[GHL Native Webhook] Deleted old webhook id=${existing.webhook_id}`);
+        await _ghlProvider.deleteWebhookSubscription(accessToken, conn.webhook_id);
+        console.log(`[GHL Native Webhook] Deleted old webhook id=${conn.webhook_id}`);
       } catch (e) { console.warn('[GHL Native Webhook] Could not delete old webhook:', e.message); }
     }
 
