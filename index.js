@@ -5648,7 +5648,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   // finding an existing pending GHL call from the same contact.
   // Match: instagram (primary) → email (fallback). Never match by name.
   if (eventType === 'AppointmentCreate') {
-    const ACTIVE_ESTADOS = ['Pendiente', 'Agendado'];
+    const ACTIVE_ESTADOS = ['Pendiente', 'Agendado', 'Re agenda', 'Cancelada'];
     let rescheduleMatches = null;
 
     // Only match calls with a future fecha_llamada — past appointments cannot be rescheduled
