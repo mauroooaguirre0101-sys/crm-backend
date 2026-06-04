@@ -44,8 +44,10 @@ async function _tokenCall(params) {
       user_type:     'Location',   // required by GHL for location-scoped tokens
     }).toString(),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(`GHL token [${res.status}]: ${JSON.stringify(data).slice(0, 400)}`);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch (e) { data = {}; }
+  if (!res.ok) throw new Error(`GHL token [${res.status}]: ${text.slice(0, 400)}`);
   return data;
 }
 
