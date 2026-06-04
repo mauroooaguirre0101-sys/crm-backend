@@ -5592,7 +5592,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   // Try to find existing call by provider_event_id
   if (apptId) {
     const { data: existing, error: lookupErr } = await supabase.from('calls')
-      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion, closer, closer_email, calendar_id')
+      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion, closer, calendar_id')
       .eq('cliente_id', cliente_id).eq('provider_event_id', apptId).maybeSingle();
     if (lookupErr) console.warn(`[GHL UpsertCall] Lookup error: ${lookupErr.message}`);
 
@@ -5612,7 +5612,6 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
         ...(apptId                                      && { provider_event_id: apptId }),
         ...(calendarName                                && { calendar_name: calendarName }),
         ...(closer || existing.closer                   ? { closer: closer || existing.closer } : {}),
-        ...(closerEmail || existing.closer_email        ? { closer_email: closerEmail || existing.closer_email } : {}),
         ...(calendarId || existing.calendar_id          ? { calendar_id: calendarId || existing.calendar_id } : {}),
       };
       if (eventType === 'AppointmentRescheduled' && appt.startTime && appt.startTime !== existing.fecha_llamada) {
@@ -5668,7 +5667,6 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     calendar_name:          calendarName   || null,
     preguntas_calificacion: preguntasCalificacion,
     closer:                 closer         || null,
-    closer_email:           closerEmail    || null,
     calendar_id:            calendarId     || null,
   };
 
@@ -5682,6 +5680,8 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
       cliente_id, nombre, instagram, whatsapp: telefono, email,
       origen: 'GHL', estado, numero_llamada, seguimientos: 0, responde: false,
       fecha_llamada: appt.startTime || null, link_llamada: meetingLink || null,
+      closer: closer || null, calendar_name: calendarName || null,
+      provider_event_id: apptId || null, calendar_id: calendarId || null,
     };
     console.log(`[GHL UpsertCall] Core INSERT: ${JSON.stringify(coreRow)}`);
     ({ data, error } = await supabase.from('calls').insert(coreRow).select('id').single());
