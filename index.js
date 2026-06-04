@@ -5651,20 +5651,25 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     const ACTIVE_ESTADOS = ['Pendiente', 'Agendado'];
     let rescheduleMatches = null;
 
+    // Only match calls with a future fecha_llamada — past appointments cannot be rescheduled
+    const nowIso = new Date().toISOString();
+
     if (instagram) {
       const { data } = await supabase.from('calls')
         .select('id, fecha_llamada, provider_event_id')
         .eq('cliente_id', cliente_id).eq('origen', 'GHL').eq('instagram', instagram)
-        .in('estado', ACTIVE_ESTADOS);
+        .in('estado', ACTIVE_ESTADOS)
+        .gte('fecha_llamada', nowIso);
       rescheduleMatches = data;
-      console.log(`[GHL Reschedule] instagram="${instagram}" active matches=${rescheduleMatches?.length ?? 0}`);
+      console.log(`[GHL Reschedule] instagram="${instagram}" future active matches=${rescheduleMatches?.length ?? 0}`);
     } else if (email) {
       const { data } = await supabase.from('calls')
         .select('id, fecha_llamada, provider_event_id')
         .eq('cliente_id', cliente_id).eq('origen', 'GHL').eq('email', email)
-        .in('estado', ACTIVE_ESTADOS);
+        .in('estado', ACTIVE_ESTADOS)
+        .gte('fecha_llamada', nowIso);
       rescheduleMatches = data;
-      console.log(`[GHL Reschedule] email="${email}" active matches=${rescheduleMatches?.length ?? 0}`);
+      console.log(`[GHL Reschedule] email="${email}" future active matches=${rescheduleMatches?.length ?? 0}`);
     } else {
       console.log(`[GHL Reschedule] No instagram or email — skipping reschedule detection`);
     }
