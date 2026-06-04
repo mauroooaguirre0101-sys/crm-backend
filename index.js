@@ -854,6 +854,7 @@ app.delete('/call/:id', validateAccess, async (req, res) => {
 // 🔥 CREATE LEAD
 // ===============================
 app.post('/lead', validateAccess, async (req, res) => {
+  console.log(`[/lead] body: ${JSON.stringify(req.body)}`);
   try {
     const { nombre, instagram, mensaje, origen, tipo, etiqueta } = req.body;
 
