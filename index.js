@@ -6253,14 +6253,14 @@ app.post('/ghl/register-native-webhook', async (req, res) => {
     console.log(`[GHL Native Webhook] Creating subscription: locationId=${locationId} url=${webhookUrl}`);
     const wh = await _ghlProvider.createWebhookSubscription(accessToken, locationId, webhookUrl);
     console.log(`[GHL Native Webhook] GHL response: ${JSON.stringify(wh)}`);
-    const webhookId = wh?.id || wh?.webhookId || null;
+    const webhookId = wh?.id || wh?.webhookId || wh?.webhook?.id || null;
     console.log(`[GHL Native Webhook] ✓ Created webhook id=${webhookId} url=${webhookUrl}`);
 
     await supabase.from('calendar_integrations')
       .update({ webhook_id: webhookId, webhook_url: webhookUrl, provider_location_id: locationId })
       .eq('negocio_id', cliente_id).eq('provider', 'ghl');
 
-    res.json({ ok: true, webhook_id: webhookId, webhook_url: webhookUrl, location_id: locationId, events: ['AppointmentCreate','AppointmentUpdate','AppointmentDelete','AppointmentRescheduled'] });
+    res.json({ ok: true, webhook_id: webhookId, webhook_url: webhookUrl, location_id: locationId, ghl_raw_response: wh, events: ['AppointmentCreate','AppointmentUpdate','AppointmentDelete','AppointmentRescheduled'] });
   } catch (err) {
     console.error('[GHL Native Webhook] Error:', err.message);
     res.status(500).json({ error: err.message });
