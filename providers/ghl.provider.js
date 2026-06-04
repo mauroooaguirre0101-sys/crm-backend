@@ -97,7 +97,7 @@ async function createWebhookSubscription(accessToken, locationId, callbackUrl) {
   const data = await _apiCall('POST', '/webhooks', {
     name:       'CRM Appointments Sync',
     url:        callbackUrl,
-    events:     ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete'],
+    events:     ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentRescheduled'],
     locationId,
   }, accessToken);
   return data;

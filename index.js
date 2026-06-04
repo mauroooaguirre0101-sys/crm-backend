@@ -6218,6 +6218,57 @@ app.get('/integration/provider', validateAccess, async (req, res) => {
   res.json({ provider, connected, info });
 });
 
+// POST /ghl/register-native-webhook — registers GHL native webhook using stored OAuth token
+// Needed when the OAuth flow didn't auto-create the subscription (e.g. locationId was missing)
+app.post('/ghl/register-native-webhook', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+
+  const { cliente_id } = req.body;
+  if (!cliente_id) return res.status(400).json({ error: 'Missing cliente_id' });
+
+  try {
+    const { data: conn, error: connErr } = await supabase
+      .from('calendar_integrations')
+      .select('access_token, refresh_token, token_expires_at, webhook_token')
+      .eq('negocio_id', cliente_id).eq('provider', 'ghl').maybeSingle();
+    if (connErr || !conn) return res.status(404).json({ error: 'GHL connection not found for this cliente_id' });
+
+    const { accessToken } = await _ghlProvider.ensureFreshToken({ ...conn, negocio_id: cliente_id });
+
+    // locationId: use env var (Private Integration) as source of truth
+    const locationId = process.env.GHL_LOCATION_ID;
+    if (!locationId) return res.status(500).json({ error: 'GHL_LOCATION_ID env var not set' });
+
+    const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
+    const webhookUrl = `${backendUrl}/webhooks/ghl?t=${conn.webhook_token}`;
+
+    // Delete existing webhook if any
+    const { data: existing } = await supabase
+      .from('calendar_integrations').select('webhook_id')
+      .eq('negocio_id', cliente_id).eq('provider', 'ghl').maybeSingle();
+    if (existing?.webhook_id) {
+      try {
+        await _ghlProvider.deleteWebhookSubscription(accessToken, existing.webhook_id);
+        console.log(`[GHL Native Webhook] Deleted old webhook id=${existing.webhook_id}`);
+      } catch (e) { console.warn('[GHL Native Webhook] Could not delete old webhook:', e.message); }
+    }
+
+    const wh = await _ghlProvider.createWebhookSubscription(accessToken, locationId, webhookUrl);
+    const webhookId = wh?.id || wh?.webhookId || null;
+    console.log(`[GHL Native Webhook] ✓ Created webhook id=${webhookId} url=${webhookUrl}`);
+
+    await supabase.from('calendar_integrations')
+      .update({ webhook_id: webhookId, webhook_url: webhookUrl, provider_location_id: locationId })
+      .eq('negocio_id', cliente_id).eq('provider', 'ghl');
+
+    res.json({ ok: true, webhook_id: webhookId, webhook_url: webhookUrl, location_id: locationId, events: ['AppointmentCreate','AppointmentUpdate','AppointmentDelete','AppointmentRescheduled'] });
+  } catch (err) {
+    console.error('[GHL Native Webhook] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /ghl/debug — GHL pipeline debug (holding-only)
 app.get('/ghl/debug', async (req, res) => {
   const email = req.headers['x-user-email'];
