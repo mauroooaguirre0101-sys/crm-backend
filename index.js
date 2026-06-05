@@ -359,7 +359,7 @@ const LEADS_LITE_FIELDS = [
   'id','estado','estado_anterior','calificado','descalificado','tipo','origen',
   'created_at','updated_at','estado_updated_at',
   'etiqueta','etiquetas','nombre','instagram',
-  'source','seguimientos','show','respondio_seguimiento_4','agendado_por',
+  'source','seguimientos','show','respondio_seguimiento_4',
 ].join(',');
 
 app.get('/leads', validateAccess, async (req, res) => {
@@ -532,8 +532,10 @@ app.patch('/leads/:id', validateAccess, async (req, res) => {
 
     // Non-admins can only set agendado_por if it's not already set
     if (updates.agendado_por !== undefined && req.user.role !== 'admin') {
-      const { data: current } = await supabase.from('leads').select('agendado_por').eq('id', id).eq('cliente_id', req.cliente_id).single();
-      if (current?.agendado_por) delete updates.agendado_por;
+      try {
+        const { data: current } = await supabase.from('leads').select('agendado_por').eq('id', id).eq('cliente_id', req.cliente_id).single();
+        if (current?.agendado_por) delete updates.agendado_por;
+      } catch (_) { delete updates.agendado_por; }
     }
 
     const { error } = await supabase
@@ -658,15 +660,17 @@ app.post('/call/precall', validateAccess, async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
 
-    // Propagate agendado_por to the matching lead if present
+    // Propagate agendado_por to the matching lead if present (requires migration)
     if (agendado_por) {
-      const ig = instagram.toLowerCase().replace(/^@/, '');
-      const { data: matchLead } = await supabase
-        .from('leads').select('id, agendado_por').eq('cliente_id', req.cliente_id)
-        .ilike('instagram', ig).maybeSingle();
-      if (matchLead && !matchLead.agendado_por) {
-        await supabase.from('leads').update({ agendado_por }).eq('id', matchLead.id);
-      }
+      try {
+        const ig = instagram.toLowerCase().replace(/^@/, '');
+        const { data: matchLead } = await supabase
+          .from('leads').select('id, agendado_por').eq('cliente_id', req.cliente_id)
+          .ilike('instagram', ig).maybeSingle();
+        if (matchLead && !matchLead.agendado_por) {
+          await supabase.from('leads').update({ agendado_por }).eq('id', matchLead.id);
+        }
+      } catch (_) {}
     }
 
     res.json({ ok: true });
