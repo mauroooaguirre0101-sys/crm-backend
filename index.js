@@ -2873,22 +2873,33 @@ const DEFAULT_QUESTIONS = {
   ],
 };
 
+const DEFAULT_COMPLETION = { titulo: '¡Formulario completado!', texto: 'Gracias por tomarte el tiempo. Tu consultor podrá prepararse mejor para ayudarte a partir de tus respuestas.' };
+
 app.get('/form-template', async (req, res) => {
   try {
     const { cliente_id, tipo } = req.query;
     if (!cliente_id || !tipo) return res.status(400).json({ error: 'Faltan parámetros' });
     const { data } = await supabase.from('form_templates').select('questions').eq('cliente_id', cliente_id).eq('tipo', tipo).maybeSingle();
     const saved = data?.questions;
-    res.json({ questions: (Array.isArray(saved) && saved.length > 0) ? saved : (DEFAULT_QUESTIONS[tipo] || []) });
+    const all = (Array.isArray(saved) && saved.length > 0) ? saved : (DEFAULT_QUESTIONS[tipo] || []);
+    // Separate _completion entry from real questions
+    const completion = all.find(q => q.id === '_completion') || DEFAULT_COMPLETION;
+    const questions  = all.filter(q => q.id !== '_completion');
+    res.json({ questions, completion_message: { titulo: completion.titulo || DEFAULT_COMPLETION.titulo, texto: completion.texto || DEFAULT_COMPLETION.texto } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/form-template', validateAccess, async (req, res) => {
   try {
-    const { tipo, questions } = req.body;
+    const { tipo, questions, completion_message } = req.body;
     if (!tipo || !Array.isArray(questions)) return res.status(400).json({ error: 'Datos inválidos' });
+    // Store completion_message as a reserved _completion entry at end of array
+    const cm = completion_message && (completion_message.titulo || completion_message.texto)
+      ? { id: '_completion', titulo: completion_message.titulo || '', texto: completion_message.texto || '' }
+      : null;
+    const toSave = cm ? [...questions, cm] : questions;
     const { data, error } = await supabase.from('form_templates')
-      .upsert({ cliente_id: req.cliente_id, tipo, questions, updated_at: new Date().toISOString() }, { onConflict: 'cliente_id,tipo' })
+      .upsert({ cliente_id: req.cliente_id, tipo, questions: toSave, updated_at: new Date().toISOString() }, { onConflict: 'cliente_id,tipo' })
       .select('*').single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
