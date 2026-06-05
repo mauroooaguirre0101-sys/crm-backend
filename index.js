@@ -2936,6 +2936,15 @@ app.get('/form-responses', validateAccess, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.delete('/form-response/:id', validateAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase.from('form_responses').delete().eq('id', id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ===============================
 // 📊 FORM ANALYTICS
 // ===============================
