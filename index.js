@@ -1559,7 +1559,11 @@ app.get('/equipo/members', validateAccess, async (req, res) => {
     const { data, error } = await supabase.from('equipo_members')
       .select('*').eq('cliente_id', req.cliente_id).order('created_at');
     if (error) return res.status(500).json({ error: error.message });
-    res.json(data || []);
+    const result = (data || []).map(m => {
+      const meta = (m.rules || []).find(r => r.id === '_agendas');
+      return { ...m, agendas_manual: meta ? meta.count : null, rules: (m.rules || []).filter(r => r.id !== '_agendas') };
+    });
+    res.json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1578,13 +1582,26 @@ app.post('/equipo/members', validateAccess, async (req, res) => {
 app.patch('/equipo/members/:id', validateAccess, async (req, res) => {
   try {
     const updates = {};
-    if (req.body.nombre         !== undefined) updates.nombre         = req.body.nombre;
-    if (req.body.rules          !== undefined) updates.rules          = req.body.rules;
-    if (req.body.agendas_manual !== undefined) updates.agendas_manual = req.body.agendas_manual === null ? null : Number(req.body.agendas_manual);
+    if (req.body.nombre !== undefined) updates.nombre = req.body.nombre;
+
+    // agendas_manual stored inside rules array as { id:'_agendas', count:N }
+    if (req.body.agendas_manual !== undefined || req.body.rules !== undefined) {
+      const { data: current } = await supabase.from('equipo_members').select('rules').eq('id', req.params.id).eq('cliente_id', req.cliente_id).single();
+      let rules = Array.isArray(current?.rules) ? current.rules.filter(r => r.id !== '_agendas') : [];
+      if (req.body.rules !== undefined) rules = req.body.rules.filter(r => r.id !== '_agendas');
+      if (req.body.agendas_manual !== undefined && req.body.agendas_manual !== null) {
+        rules = [...rules, { id: '_agendas', count: Number(req.body.agendas_manual) }];
+      }
+      updates.rules = rules;
+    }
+
     const { data, error } = await supabase.from('equipo_members')
       .update(updates).eq('id', req.params.id).eq('cliente_id', req.cliente_id)
       .select().single();
     if (error) return res.status(500).json({ error: error.message });
+    const meta = (data.rules || []).find(r => r.id === '_agendas');
+    data.agendas_manual = meta ? meta.count : null;
+    data.rules = (data.rules || []).filter(r => r.id !== '_agendas');
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
