@@ -1578,8 +1578,9 @@ app.post('/equipo/members', validateAccess, async (req, res) => {
 app.patch('/equipo/members/:id', validateAccess, async (req, res) => {
   try {
     const updates = {};
-    if (req.body.nombre !== undefined) updates.nombre = req.body.nombre;
-    if (req.body.rules  !== undefined) updates.rules  = req.body.rules;
+    if (req.body.nombre         !== undefined) updates.nombre         = req.body.nombre;
+    if (req.body.rules          !== undefined) updates.rules          = req.body.rules;
+    if (req.body.agendas_manual !== undefined) updates.agendas_manual = req.body.agendas_manual === null ? null : Number(req.body.agendas_manual);
     const { data, error } = await supabase.from('equipo_members')
       .update(updates).eq('id', req.params.id).eq('cliente_id', req.cliente_id)
       .select().single();
