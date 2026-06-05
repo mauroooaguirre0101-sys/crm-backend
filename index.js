@@ -2937,6 +2937,135 @@ app.get('/form-responses', validateAccess, async (req, res) => {
 });
 
 // ===============================
+// 📊 FORM ANALYTICS
+// ===============================
+app.get('/form-analytics/onboarding', validateAccess, async (req, res) => {
+  try {
+    const cliente_id = req.cliente_id;
+
+    const [{ data: responses }, { data: tpl }, { data: closedLeads }] = await Promise.all([
+      supabase.from('form_responses').select('*').eq('cliente_id', cliente_id).eq('tipo', 'onboarding').order('submitted_at', { ascending: false }),
+      supabase.from('form_templates').select('questions').eq('cliente_id', cliente_id).eq('tipo', 'onboarding').maybeSingle(),
+      supabase.from('leads').select('etiquetas, etiqueta').eq('cliente_id', cliente_id).in('estado', ['Cerrado', 'Cerrada', 'Seña']),
+    ]);
+
+    if (!responses || responses.length === 0) {
+      return res.json({ total: 0, questions: [], structured: {}, content_attribution: [], ai_insights: null, generated_at: new Date().toISOString() });
+    }
+
+    const savedQ = tpl?.questions;
+    const allQ = (Array.isArray(savedQ) && savedQ.length > 0) ? savedQ : DEFAULT_QUESTIONS.onboarding;
+    const questions = allQ.filter(q => q.id !== '_completion');
+
+    // Structured stats for radio/checkbox/scale
+    const structured = {};
+    for (const q of questions) {
+      if (q.tipo === 'radio' || q.tipo === 'checkbox') {
+        const counts = {};
+        for (const r of responses) {
+          const val = r.responses?.[q.id];
+          if (!val) continue;
+          const vals = Array.isArray(val) ? val : [val];
+          for (const v of vals) {
+            if (v && String(v).trim()) counts[String(v).trim()] = (counts[String(v).trim()] || 0) + 1;
+          }
+        }
+        if (Object.keys(counts).length) structured[q.id] = { titulo: q.titulo, tipo: q.tipo, counts };
+      } else if (q.tipo === 'scale') {
+        const vals = responses.map(r => Number(r.responses?.[q.id])).filter(v => v > 0);
+        if (vals.length) {
+          const avg = Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
+          const distribution = vals.reduce((acc, v) => { acc[v] = (acc[v] || 0) + 1; return acc; }, {});
+          structured[q.id] = { titulo: q.titulo, tipo: 'scale', avg, distribution, count: vals.length, min: q.min || 1, max: q.max || 10 };
+        }
+      }
+    }
+
+    // Content attribution from closed leads
+    const contentCounts = {};
+    for (const lead of (closedLeads || [])) {
+      const tags = Array.isArray(lead.etiquetas) ? lead.etiquetas : (lead.etiqueta ? [lead.etiqueta] : []);
+      for (const tag of tags) {
+        if (tag && String(tag).trim()) {
+          const t = String(tag).trim();
+          contentCounts[t] = (contentCounts[t] || 0) + 1;
+        }
+      }
+    }
+    const content_attribution = Object.entries(contentCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([label, ventas]) => ({ label, ventas }));
+
+    // AI insights
+    let ai_insights = null;
+    if (_anthropic) {
+      const textQs = questions.filter(q => q.tipo === 'textarea' || q.tipo === 'text');
+      const textSamples = responses.slice(0, 60).map(r => {
+        const texts = {};
+        for (const q of textQs) {
+          const val = r.responses?.[q.id];
+          if (val && String(val).trim()) texts[q.titulo] = String(val).trim();
+        }
+        return texts;
+      }).filter(t => Object.keys(t).length > 0);
+
+      const promptData = {
+        total_respuestas: responses.length,
+        preguntas: questions.map(q => ({ id: q.id, titulo: q.titulo, tipo: q.tipo })),
+        estadisticas_estructuradas: structured,
+        atribucion_contenido: content_attribution,
+        respuestas_abiertas: textSamples,
+      };
+
+      try {
+        const aiResp = await _anthropic.messages.create({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 2048,
+          messages: [{
+            role: 'user',
+            content: `Sos un experto en marketing y ventas de alto ticket. Analizá los datos del formulario de onboarding y devolvé insights accionables.
+
+Datos:
+${JSON.stringify(promptData, null, 2)}
+
+Devolvé ÚNICAMENTE un JSON válido (sin texto adicional) con esta estructura exacta:
+{
+  "resumen_ejecutivo": "2-3 oraciones sobre el perfil general y hallazgos principales",
+  "perfiles_avatar": [
+    { "nombre": "Nombre del perfil", "descripcion": "Descripción del avatar ideal", "porcentaje_estimado": 40, "señales": ["señal 1", "señal 2"] }
+  ],
+  "insights_ventas": [
+    { "titulo": "Título corto", "descripcion": "Insight accionable para el equipo de ventas", "icono": "💡" }
+  ],
+  "insights_marketing": [
+    { "titulo": "Título corto", "descripcion": "Insight accionable para marketing y contenido", "icono": "📈" }
+  ],
+  "objeciones_frecuentes": ["objeción 1", "objeción 2", "objeción 3"],
+  "recomendaciones": ["recomendación accionable 1", "recomendación accionable 2", "recomendación accionable 3"]
+}`,
+          }],
+        });
+        const text = aiResp.content[0].text.trim();
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) ai_insights = JSON.parse(jsonMatch[0]);
+      } catch (e) {
+        console.error('Analytics AI error:', e.message);
+      }
+    }
+
+    res.json({
+      total: responses.length,
+      questions: questions.map(q => ({ id: q.id, titulo: q.titulo, tipo: q.tipo })),
+      structured,
+      content_attribution,
+      ai_insights,
+      generated_at: new Date().toISOString(),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ===============================
 // 🤖 IA — CONFIG
 // ===============================
 app.get('/ai/config', validateAccess, async (req, res) => {
