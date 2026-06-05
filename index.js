@@ -863,7 +863,9 @@ app.post('/lead', validateAccess, async (req, res) => {
     // Normalize instagram: strip leading @, lowercase
     const instagram = (instagramRaw || '').replace(/^@/, '').toLowerCase().trim() || null;
 
-    if (!instagram) {
+    // Reject GHL placeholder values sent when the custom field is empty
+    const INVALID_IG = new Set(['-', '--', 'n/a', 'na', 'none', 'null', 'undefined', 'sin instagram']);
+    if (!instagram || INVALID_IG.has(instagram)) {
       return res.status(400).json({ error: 'Falta instagram' });
     }
 
