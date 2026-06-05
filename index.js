@@ -359,7 +359,7 @@ const LEADS_LITE_FIELDS = [
   'id','estado','estado_anterior','calificado','descalificado','tipo','origen',
   'created_at','updated_at','estado_updated_at',
   'etiqueta','etiquetas','nombre','instagram',
-  'source','seguimientos','show','respondio_seguimiento_4',
+  'source','seguimientos','show','respondio_seguimiento_4','agendado_por',
 ].join(',');
 
 app.get('/leads', validateAccess, async (req, res) => {
@@ -530,6 +530,12 @@ app.patch('/leads/:id', validateAccess, async (req, res) => {
     delete updates.cliente_id;
     delete updates.created_at;
 
+    // Non-admins can only set agendado_por if it's not already set
+    if (updates.agendado_por !== undefined && req.user.role !== 'admin') {
+      const { data: current } = await supabase.from('leads').select('agendado_por').eq('id', id).eq('cliente_id', req.cliente_id).single();
+      if (current?.agendado_por) delete updates.agendado_por;
+    }
+
     const { error } = await supabase
       .from('leads')
       .update(updates)
@@ -610,7 +616,7 @@ app.get('/calls', validateAccess, async (req, res) => {
 app.post('/call/precall', validateAccess, async (req, res) => {
   try {
     const { nombre, instagram, whatsapp, info_previa, origen, fecha_llamada,
-            closer, calendar_name, email } = req.body;
+            closer, calendar_name, email, agendado_por } = req.body;
 
     if (!instagram) {
       return res.status(400).json({ error: 'Falta instagram' });
@@ -650,6 +656,17 @@ app.post('/call/precall', validateAccess, async (req, res) => {
     if (error) {
       console.error('❌ PRECALL:', error);
       return res.status(500).json({ error: error.message });
+    }
+
+    // Propagate agendado_por to the matching lead if present
+    if (agendado_por) {
+      const ig = instagram.toLowerCase().replace(/^@/, '');
+      const { data: matchLead } = await supabase
+        .from('leads').select('id, agendado_por').eq('cliente_id', req.cliente_id)
+        .ilike('instagram', ig).maybeSingle();
+      if (matchLead && !matchLead.agendado_por) {
+        await supabase.from('leads').update({ agendado_por }).eq('id', matchLead.id);
+      }
     }
 
     res.json({ ok: true });
