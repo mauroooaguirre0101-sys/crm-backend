@@ -5137,11 +5137,26 @@ app.post('/discord/send-weekly-report', async (req, res) => {
 // 🗓  CALENDLY INTEGRATION (OAuth per-negocio)
 // ══════════════════════════════════════════
 
-// In-memory webhook log (last 50 events) for /calendly/debug
+// In-memory webhook log (last 50 events) — kept for immediate /debug reads
 const _calendlyWebhookLog = [];
 function _logCalendlyWebhook(entry) {
-  _calendlyWebhookLog.unshift({ ...entry, at: new Date().toISOString() });
+  const record = { ...entry, at: new Date().toISOString() };
+  _calendlyWebhookLog.unshift(record);
   if (_calendlyWebhookLog.length > 50) _calendlyWebhookLog.pop();
+  // Also persist to DB so logs survive Railway deploys
+  supabase.from('calendly_webhook_log').insert({
+    event_type:    entry.eventType   || null,
+    invitee_uri:   entry.inviteeUri  || null,
+    cliente_id:    entry.cliente_id  || null,
+    status:        entry.status      || null,
+    invitee_name:  entry.name        || null,
+    invitee_email: entry.email       || null,
+    webhook_token: entry.webhookToken|| null,
+    call_id:       entry.callId      ? String(entry.callId) : null,
+    error_msg:     entry.error       || null,
+  }).then(({ error }) => {
+    if (error) console.warn('[Calendly Log] DB persist failed:', error.message);
+  });
 }
 
 // Get and auto-refresh the token for a negocio's Calendly connection
@@ -5216,7 +5231,7 @@ async function _calendlyUpdateLeadAgendado(instagram, name, cliente_id) {
 }
 
 // Insert a new call into the `calls` table (the table "Llamadas de venta" reads from)
-async function _calendlyCreateCall(inv, cliente_id) {
+async function _calendlyCreateCall(inv, cliente_id, extraFields = {}) {
   // Count existing calls for this instagram to set numero_llamada
   const instagramKey = inv.instagram || '';
   let numero_llamada = 1;
@@ -5245,6 +5260,7 @@ async function _calendlyCreateCall(inv, cliente_id) {
     calendly_invitee_uri:      inv.uri        || null,
     email:                     inv.email      || null,
     calendly_form_responses:   formResponsesObj,
+    ...extraFields,
   };
 
   console.log(`[Calendly Lead Sync] Attempting INSERT into calls — cliente=${cliente_id} nombre="${inv.name}" email=${inv.email} fecha=${inv.startTime}`);
@@ -5379,9 +5395,19 @@ app.post('/webhooks/calendly', async (req, res) => {
           .eq('cliente_id', cliente_id)
           .eq('calendly_invitee_uri', oldInviteeUri)
           .select('id');
-        if (error) console.warn('[Calendly Webhook] ⚠ Reschedule update error:', error.message);
-        else console.log(`[Calendly Webhook] ✓ Rescheduled rows=${updated?.length || 0} nueva_fecha=${inv.startTime}`);
-        _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'rescheduled', name: inv.name, email: inv.email });
+
+        if (error) {
+          console.warn('[Calendly Webhook] ⚠ Reschedule update error:', error.message);
+          _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'error', name: inv.name, email: inv.email, error: error.message });
+        } else if (!updated || updated.length === 0) {
+          // Original call not in CRM (webhook may have been lost earlier) — create it now
+          console.warn(`[Calendly Webhook] ⚠ Reschedule: original call not found (old=${oldInviteeUri}) — creating new call as fallback`);
+          const callId = await _calendlyCreateCall(inv, cliente_id, { reagendada: true });
+          _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'reschedule_fallback_created', callId, name: inv.name, email: inv.email });
+        } else {
+          console.log(`[Calendly Webhook] ✓ Rescheduled rows=${updated.length} nueva_fecha=${inv.startTime}`);
+          _logCalendlyWebhook({ eventType, inviteeUri: inv.uri, cliente_id, status: 'rescheduled', callId: updated[0]?.id, name: inv.name, email: inv.email });
+        }
       } else {
         // New booking — dedup check first
         if (inv.uri) {
@@ -5590,7 +5616,7 @@ async function _calendlyDebugHandler(req, res) {
   const email = req.headers['x-user-email'];
   if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
   try {
-    const [connectionsRes, mappingsRes, callsRes] = await Promise.all([
+    const [connectionsRes, mappingsRes, callsRes, dbLogRes] = await Promise.all([
       supabase.from('calendly_connections')
         .select('negocio_id, calendly_user_name, calendly_user_email, webhook_uri, webhook_token, connected_at')
         .order('connected_at', { ascending: false }),
@@ -5600,13 +5626,16 @@ async function _calendlyDebugHandler(req, res) {
         .select('id, nombre, email, estado, origen, cliente_id, fecha_llamada, calendly_invitee_uri, created_at')
         .eq('origen', 'Calendly')
         .order('created_at', { ascending: false }).limit(20),
+      supabase.from('calendly_webhook_log')
+        .select('*').order('received_at', { ascending: false }).limit(100),
     ]);
     res.json({
-      connections:     connectionsRes.data || [],
-      mappings:        mappingsRes.data    || [],
-      recent_webhooks: _calendlyWebhookLog,
-      recent_calls:    callsRes.data       || [],
-      note:            '"recent_calls" shows calls with origen=Calendly. "recent_webhooks" is in-memory, resets on deploy.',
+      connections:            connectionsRes.data || [],
+      mappings:               mappingsRes.data    || [],
+      recent_webhooks_memory: _calendlyWebhookLog,
+      recent_webhooks_db:     dbLogRes.data       || [],
+      recent_calls:           callsRes.data       || [],
+      note:                   '"recent_webhooks_db" persists across deploys. "recent_webhooks_memory" resets on deploy.',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
