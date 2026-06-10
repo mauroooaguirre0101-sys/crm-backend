@@ -5549,6 +5549,10 @@ app.get('/calendly/callback', async (req, res) => {
 
     if (upsertErr) throw new Error(`DB upsert failed: ${upsertErr.message}`);
 
+    // Auto-save provider preference so the holding dashboard knows this negocio uses Calendly
+    await supabase.from('negocio_settings')
+      .upsert({ negocio_id: cliente_id, calendar_provider: 'calendly' }, { onConflict: 'negocio_id' });
+
     console.log(`[Calendly OAuth] Connection saved — negocio=${cliente_id} user=${user.email}`);
     res.send(_calendlyPopupPage(true, cliente_id, null));
 
@@ -5688,6 +5692,17 @@ function _getCalendarProvider(negocio_id) {
   const ghlIds = (process.env.GHL_NEGOCIO_IDS || '')
     .split(',').map(s => s.trim()).filter(Boolean);
   return ghlIds.includes(negocio_id) ? 'ghl' : 'calendly';
+}
+
+// Async version: checks negocio_settings table first, then falls back to env var
+async function _resolveCalendarProvider(negocio_id) {
+  const { data } = await supabase
+    .from('negocio_settings')
+    .select('calendar_provider')
+    .eq('negocio_id', negocio_id)
+    .maybeSingle();
+  if (data?.calendar_provider) return data.calendar_provider;
+  return _getCalendarProvider(negocio_id);
 }
 
 // In-memory webhook log (last 50 events) for /ghl/debug
@@ -6330,6 +6345,10 @@ app.get('/oauth/callback', async (req, res) => {
       .from('calendar_integrations').upsert(connRow, { onConflict: 'negocio_id' });
     if (upsertErr) throw new Error(`DB upsert failed: ${upsertErr.message}`);
 
+    // Auto-save provider preference so the holding dashboard knows this negocio uses GHL
+    await supabase.from('negocio_settings')
+      .upsert({ negocio_id: cliente_id, calendar_provider: 'ghl' }, { onConflict: 'negocio_id' });
+
     console.log(`[GHL OAuth] ✓ Connection saved — negocio=${cliente_id} location=${locationId}`);
     res.send(_ghlPopupPage(true, cliente_id, null));
 
@@ -6392,7 +6411,7 @@ app.delete('/ghl/disconnect', validateAccess, async (req, res) => {
 // GET /integration/provider — returns which calendar provider this negocio uses + connection status
 // Used by the frontend "Integraciones" page
 app.get('/integration/provider', validateAccess, async (req, res) => {
-  const provider = _getCalendarProvider(req.cliente_id);
+  const provider = await _resolveCalendarProvider(req.cliente_id);
   let connected  = false;
   let info       = null;
 
@@ -6446,6 +6465,20 @@ app.get('/integration/provider', validateAccess, async (req, res) => {
   }
 
   res.json({ provider, connected, info });
+});
+
+// POST /integration/set-provider — holding-only: set preferred calendar provider for a negocio
+app.post('/integration/set-provider', async (req, res) => {
+  const email = req.headers['x-user-email'];
+  if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
+  const { negocio_id, provider } = req.body;
+  if (!negocio_id || !['ghl', 'calendly'].includes(provider))
+    return res.status(400).json({ error: 'negocio_id y provider (ghl|calendly) son requeridos' });
+  const { error } = await supabase.from('negocio_settings')
+    .upsert({ negocio_id, calendar_provider: provider }, { onConflict: 'negocio_id' });
+  if (error) return res.status(500).json({ error: error.message });
+  console.log(`[Integration] Provider set: negocio=${negocio_id} provider=${provider}`);
+  res.json({ ok: true, negocio_id, provider });
 });
 
 // POST /ghl/register-native-webhook — registers GHL native webhook using stored OAuth token
@@ -6530,7 +6563,7 @@ app.post('/ghl/sync', async (req, res) => {
 
     const cliente_id = req.query.cliente_id || req.body?.cliente_id;
     if (!cliente_id) return res.status(400).json({ error: 'cliente_id required' });
-    if (_getCalendarProvider(cliente_id) !== 'ghl') {
+    if ((await _resolveCalendarProvider(cliente_id)) !== 'ghl') {
       return res.status(400).json({ error: `Negocio "${cliente_id}" does not use GHL` });
     }
 
