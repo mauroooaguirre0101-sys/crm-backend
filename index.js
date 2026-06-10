@@ -748,6 +748,12 @@ app.patch('/call/:id', validateAccess, async (req, res) => {
       patch.spc_date = new Date().toISOString();
     }
 
+    // Auto-registrar cuándo se realizó la llamada (primera vez que sale de Pendiente/Re agenda)
+    const ESTADOS_COMPLETADOS = ['Cierre','Cierre Cuotas','No Cierre','No asistió','Cancelada','Seña','Seguimiento Post Call'];
+    if (estado && ESTADOS_COMPLETADOS.includes(estado) && !callData.fecha_realizada) {
+      patch.fecha_realizada = new Date().toISOString();
+    }
+
     const { error } = await supabase
       .from('calls')
       .update(patch)
