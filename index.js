@@ -6503,9 +6503,9 @@ app.post('/ghl/register-native-webhook', async (req, res) => {
     const accessToken = conn.access_token;
     if (!accessToken) return res.status(500).json({ error: 'No access token available — reconnect GHL' });
 
-    // locationId: use env var (Private Integration) as source of truth
-    const locationId = process.env.GHL_LOCATION_ID;
-    if (!locationId) return res.status(500).json({ error: 'GHL_LOCATION_ID env var not set' });
+    // locationId: prefer DB row (multi-tenant), fall back to env var (cliente_2 legacy)
+    const locationId = conn.provider_location_id || process.env.GHL_LOCATION_ID;
+    if (!locationId) return res.status(500).json({ error: 'No location ID — set provider_location_id in DB or GHL_LOCATION_ID env var' });
 
     const backendUrl = process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`;
     const webhookToken = conn.webhook_token || _ghlProvider.generateWebhookToken();
