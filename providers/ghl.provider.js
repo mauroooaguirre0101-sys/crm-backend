@@ -227,8 +227,11 @@ function _deepFindIgValue(obj, depth) {
     const isIgKey = kl.includes('instagram') || kl.includes('insta')
       || kl === 'ig' || kl.startsWith('ig_')
       || kl.includes('@') || kl.includes('usuario');
-    if (isIgKey && val && typeof val === 'string' && val.trim()) {
-      return { key, value: val.trim() };
+    if (isIgKey && val) {
+      const igStr = typeof val === 'string' ? val.trim()
+        : Array.isArray(val) ? val.filter(v => typeof v === 'string').join('').trim()
+        : '';
+      if (igStr) return { key, value: igStr };
     }
     if (val && typeof val === 'object' && !Array.isArray(val)) {
       const found = _deepFindIgValue(val, (depth || 0) + 1);
@@ -325,10 +328,16 @@ function extractQualificationAnswers(rawPayload) {
     return _QUAL_EXCLUDED_KEYS.has(kl) || _QUAL_EXCLUDED_PATTERNS.some(p => p.test(kl));
   };
 
+  const _toStr = (val) => {
+    if (typeof val === 'string') return val.trim();
+    if (Array.isArray(val)) return val.filter(v => typeof v === 'string').join(', ').trim();
+    return '';
+  };
+
   // 1. Scan TOP-LEVEL body keys — this is where GHL workflow sends form answers
   for (const [key, val] of Object.entries(rawPayload)) {
-    const strVal = typeof val === 'string' ? val.trim() : '';
-    if (!strVal) continue; // skip objects, arrays, empty strings
+    const strVal = _toStr(val);
+    if (!strVal) continue; // skip objects, empty arrays, empty strings
     if (_exclude(key)) continue;
     console.log(`[GHL Parser] qualification candidate key="${key}"`);
     answers[key] = strVal;
@@ -338,7 +347,7 @@ function extractQualificationAnswers(rawPayload) {
   for (const nested of [rawPayload.customData, rawPayload.triggerData]) {
     if (!nested || typeof nested !== 'object') continue;
     for (const [key, val] of Object.entries(nested)) {
-      const strVal = typeof val === 'string' ? val.trim() : '';
+      const strVal = _toStr(val);
       if (!strVal || _exclude(key) || answers[key]) continue;
       console.log(`[GHL Parser] qualification candidate key="${key}" (nested)`);
       answers[key] = strVal;
