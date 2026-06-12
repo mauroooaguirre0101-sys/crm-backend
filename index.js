@@ -5781,7 +5781,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     contact.lastName  || contact.last_name  || rawPayload.last_name  || '',
   ].filter(Boolean).join(' ').trim()
     || contact.full_name || rawPayload.full_name
-    || contact.name      || rawPayload.name
+    || contact.name
     || contact.email     || 'Sin nombre';
   console.log(`[GHL Parser] resolved nombre="${nombre}"`);
 
@@ -6163,9 +6163,17 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
     };
 
     if (embeddedContact) {
-      contact = embeddedContact;
-      const fullName = [embeddedContact.firstName, embeddedContact.lastName].filter(Boolean).join(' ') || embeddedContact.name || '(no name)';
-      console.log(`[GHL Webhook] Contact source: EMBEDDED → name="${fullName}" email=${embeddedContact.email || '—'} phone=${embeddedContact.phone || '—'}`);
+      // Merge: embeddedContact often only has attribution data — fill name/phone/email from rawBody if missing
+      contact = {
+        ...embeddedContact,
+        firstName: embeddedContact.firstName || embeddedContact.first_name || rawBody.first_name || rawBody.firstName || '',
+        lastName:  embeddedContact.lastName  || embeddedContact.last_name  || rawBody.last_name  || rawBody.lastName  || '',
+        full_name: embeddedContact.full_name || embeddedContact.name       || rawBody.full_name  || '',
+        email:     embeddedContact.email     || rawBody.email              || '',
+        phone:     embeddedContact.phone     || rawBody.phone              || '',
+      };
+      const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.full_name || '(no name)';
+      console.log(`[GHL Webhook] Contact source: EMBEDDED (merged) → name="${fullName}" email=${contact.email || '—'} phone=${contact.phone || '—'}`);
     } else {
       const conn     = await _getGhlToken(cliente_id);
       const apiToken = conn?.access_token || process.env.GHL_API_KEY || null;
