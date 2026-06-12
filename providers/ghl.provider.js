@@ -276,6 +276,13 @@ function extractInstagram(contact, rawPayload) {
   const match = notes.match(/@([\w.]+)/);
   if (match) return match[1].toLowerCase();
 
+  // 5. Last resort: rawPayload.name or contact.name if value starts with '@'
+  // Covers the case where the GHL form maps the instagram field to the built-in "Name" contact field.
+  for (const candidate of [rawPayload.name, contact.name]) {
+    const s = String(candidate || '').trim();
+    if (s.startsWith('@')) return _clean(s);
+  }
+
   return '';
 }
 

@@ -5796,7 +5796,6 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     contact.lastName  || contact.last_name  || rawPayload.last_name  || '',
   ].filter(Boolean).join(' ').trim()
     || contact.full_name || rawPayload.full_name
-    || contact.name
     || contact.email     || 'Sin nombre';
   console.log(`[GHL Parser] resolved nombre="${nombre}"`);
 
@@ -6183,12 +6182,33 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
         ...embeddedContact,
         firstName: embeddedContact.firstName || embeddedContact.first_name || rawBody.first_name || rawBody.firstName || '',
         lastName:  embeddedContact.lastName  || embeddedContact.last_name  || rawBody.last_name  || rawBody.lastName  || '',
-        full_name: embeddedContact.full_name || embeddedContact.name       || rawBody.full_name  || '',
+        full_name: embeddedContact.full_name || rawBody.full_name  || '',
         email:     embeddedContact.email     || rawBody.email              || '',
         phone:     embeddedContact.phone     || rawBody.phone              || '',
       };
       const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.full_name || '(no name)';
       console.log(`[GHL Webhook] Contact source: EMBEDDED (merged) → name="${fullName}" email=${contact.email || '—'} phone=${contact.phone || '—'}`);
+
+      // If still no name after merge, enrich via GHL API (embeddedContact may lack name fields)
+      const hasName = contact.firstName || contact.lastName || contact.full_name;
+      if (!hasName && contactId) {
+        const conn     = await _getGhlToken(cliente_id);
+        const apiToken = conn?.access_token || process.env.GHL_API_KEY || null;
+        if (apiToken) {
+          try {
+            const apiContact = await _ghlProvider.getContact(apiToken, contactId);
+            contact.firstName = apiContact.firstName || apiContact.first_name || contact.firstName;
+            contact.lastName  = apiContact.lastName  || apiContact.last_name  || contact.lastName;
+            contact.full_name = apiContact.full_name || contact.full_name;
+            if (!contact.email) contact.email = apiContact.email || '';
+            if (!contact.phone) contact.phone = apiContact.phone || '';
+            const n = [contact.firstName, contact.lastName].filter(Boolean).join(' ') || contact.full_name;
+            console.log(`[GHL Webhook] Contact enriched via API (embedded had no name) → name="${n}"`);
+          } catch (e) {
+            console.warn(`[GHL Webhook] ⚠ API name enrichment failed: ${e.message}`);
+          }
+        }
+      }
     } else {
       const conn     = await _getGhlToken(cliente_id);
       const apiToken = conn?.access_token || process.env.GHL_API_KEY || null;
