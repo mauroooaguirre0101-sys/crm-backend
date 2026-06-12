@@ -1781,8 +1781,22 @@ app.post('/reportes', async (req, res) => {
   try {
     let { cliente_id, alumno_id, nombre, apellido, instagram, semana, estado,
             situacion, objetivos, logros, problemas, ayuda,
-            implementacion, porque_no, extra } = req.body;
+            implementacion, porque_no, extra, respuestas } = req.body;
     if (!cliente_id) return res.status(400).json({ error: 'Falta cliente_id' });
+
+    // New dynamic form sends respuestas JSONB; extract legacy fields for backward compat
+    if (respuestas && typeof respuestas === 'object') {
+      const s = v => (Array.isArray(v) ? v.join(', ') : (v != null ? String(v) : ''));
+      if (respuestas.q1 !== undefined) estado        = s(respuestas.q1);
+      if (respuestas.q2 !== undefined) situacion     = s(respuestas.q2);
+      if (respuestas.q3 !== undefined) objetivos     = s(respuestas.q3);
+      if (respuestas.q4 !== undefined) logros        = s(respuestas.q4);
+      if (respuestas.q5 !== undefined) problemas     = s(respuestas.q5);
+      if (respuestas.q6 !== undefined) ayuda         = Array.isArray(respuestas.q6) ? respuestas.q6 : (respuestas.q6 ? [respuestas.q6] : []);
+      if (respuestas.q7 !== undefined) implementacion= s(respuestas.q7);
+      if (respuestas.q8 !== undefined) extra         = s(respuestas.q8);
+      if (respuestas.porque_no !== undefined) porque_no = s(respuestas.porque_no);
+    }
     const { data: check } = await supabase.from('user_clientes')
       .select('cliente_id').eq('cliente_id', cliente_id).limit(1);
     if (!check || check.length === 0) return res.status(400).json({ error: 'Cliente inválido' });
@@ -1829,7 +1843,7 @@ app.post('/reportes', async (req, res) => {
         }
 
         // Edición temporal aprobada — actualizar el reporte existente
-        const fields = { situacion, objetivos, logros, problemas, ayuda: ayuda || [], implementacion, porque_no: porque_no || '', extra: extra || '', estado: estado || '', semana: semana || '', locked: true, editable_until: null };
+        const fields = { situacion, objetivos, logros, problemas, ayuda: ayuda || [], implementacion, porque_no: porque_no || '', extra: extra || '', estado: estado || '', semana: semana || '', respuestas: respuestas || null, locked: true, editable_until: null };
         const { data: updated, error: updErr } = await supabase
           .from('reportes_semanales').update(fields).eq('id', existing.id).select().single();
         if (updErr) return res.status(500).json({ error: updErr.message });
@@ -1855,6 +1869,7 @@ app.post('/reportes', async (req, res) => {
       implementacion: implementacion || '',
       porque_no: porque_no || '',
       extra: extra || '',
+      respuestas: respuestas || null,
       submitted_at: now.toISOString(),
       locked: true,
       editable_until: null,
