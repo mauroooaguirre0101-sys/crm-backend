@@ -276,11 +276,31 @@ function extractInstagram(contact, rawPayload) {
   const match = notes.match(/@([\w.]+)/);
   if (match) return match[1].toLowerCase();
 
-  // 5. Last resort: rawPayload.name or contact.name if value starts with '@'
-  // Covers the case where the GHL form maps the instagram field to the built-in "Name" contact field.
+  // 5. rawPayload.name or contact.name if value starts with '@'
   for (const candidate of [rawPayload.name, contact.name]) {
     const s = String(candidate || '').trim();
     if (s.startsWith('@')) return _clean(s);
+  }
+
+  // 6. lastName field when it looks like a social handle — covers GHL forms that map the
+  // instagram question to the built-in lastName contact field.
+  // Heuristic: value must be ASCII-only (no accented chars) + contain _ or . (never in real surnames)
+  // Real Spanish/Latin surnames almost always have accented chars, spaces, or hyphens.
+  const firstNamePresent = !!(rawPayload.firstName || rawPayload.first_name
+    || contact.firstName || contact.first_name);
+  if (firstNamePresent) {
+    const lastNameCandidates = [
+      contact.lastName, contact.last_name,
+      rawPayload.lastName, rawPayload.last_name,
+    ];
+    for (const candidate of lastNameCandidates) {
+      const s = String(candidate || '').trim();
+      if (!s) continue;
+      if (/^@?[a-zA-Z0-9_.]+$/.test(s) && /[_.]/.test(s)) {
+        console.log(`[GHL Parser] instagram fallback from lastName="${s}"`);
+        return _clean(s);
+      }
+    }
   }
 
   return '';

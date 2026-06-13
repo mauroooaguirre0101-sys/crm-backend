@@ -5787,21 +5787,38 @@ async function _ghlUpdateLeadAgendado(instagram, name, cliente_id) {
   else console.log(`[GHL] ✓ Lead id=${lead.id} → Agendado (matched by ${matchedBy})`);
 }
 
+// GHL sends appointment times in the calendar's local timezone WITHOUT an offset suffix.
+// Without explicit timezone, PostgreSQL TIMESTAMPTZ treats bare ISO as UTC → 3-hour shift
+// for America/Argentina/Buenos_Aires calendars (UTC-3, no DST since 2009).
+function _normalizeGhlStartTime(raw) {
+  if (!raw) return raw;
+  const s = String(raw).trim();
+  if (s.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) return s;
+  if (/^\d{10,13}$/.test(s)) return new Date(s.length === 13 ? +s : +s * 1000).toISOString();
+  return s + '-03:00';
+}
+
 // Create or update a call in the `calls` table from a GHL appointment + contact
 // rawPayload: original webhook body — used for nombre fallback, instagram scan, reporte_ghl
 async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload = {}) {
-  // ── nombre: camelCase → snake_case → top-level payload → fallback ──────────
+  // Normalize startTime — bare ISO from GHL has no timezone; append -03:00 so Supabase stores UTC correctly
+  if (appt.startTime) appt = { ...appt, startTime: _normalizeGhlStartTime(appt.startTime) };
+
+  // ── instagram (extracted first — needed to detect lastName-as-handle) ────────
+  const instagram = _ghlProvider.extractInstagram(contact, rawPayload) || '';
+  console.log(`[GHL Parser] resolved instagram=${instagram || '(none)'}`);
+
+  // ── nombre: exclude lastName when extractInstagram used it as the handle ───
+  const _rawLastName = contact.lastName || contact.last_name || rawPayload.last_name || '';
+  const _lastNameIsInstagram = !!(instagram && _rawLastName &&
+    _rawLastName.replace(/^@/, '').replace(/\s+/g, '').toLowerCase() === instagram);
   const nombre = [
     contact.firstName || contact.first_name || rawPayload.first_name || '',
-    contact.lastName  || contact.last_name  || rawPayload.last_name  || '',
+    _lastNameIsInstagram ? '' : _rawLastName,
   ].filter(Boolean).join(' ').trim()
     || contact.full_name || rawPayload.full_name
     || contact.email     || 'Sin nombre';
-  console.log(`[GHL Parser] resolved nombre="${nombre}"`);
-
-  // ── instagram: customFields → customData → triggerData → notes ────────────
-  const instagram = _ghlProvider.extractInstagram(contact, rawPayload) || '';
-  console.log(`[GHL Parser] resolved instagram=${instagram || '(none)'}`);
+  console.log(`[GHL Parser] resolved nombre="${nombre}" (lastNameIsInstagram=${_lastNameIsInstagram})`);
 
   const email    = contact.email || rawPayload.email || '';
   const telefono = contact.phone || contact.phone_raw || contact.full_phone_number
