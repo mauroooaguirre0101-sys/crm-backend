@@ -5808,17 +5808,20 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   const instagram = _ghlProvider.extractInstagram(contact, rawPayload) || '';
   console.log(`[GHL Parser] resolved instagram=${instagram || '(none)'}`);
 
-  // ── nombre: exclude lastName when extractInstagram used it as the handle ───
+  // ── nombre: exclude lastName when it's an instagram handle or a multi-word phrase ───
   const _rawLastName = contact.lastName || contact.last_name || rawPayload.last_name || '';
   const _lastNameIsInstagram = !!(instagram && _rawLastName &&
     _rawLastName.replace(/^@/, '').replace(/\s+/g, '').toLowerCase() === instagram);
+  // 4+ words → qualification answer mapped to lastName by mistake, not a real surname
+  // "De la Cruz" (3 words) → preserved; "costos de mi negocio" (4 words) → excluded
+  const _lastNameIsPhrase = _rawLastName.trim().split(/\s+/).length > 3;
   const nombre = [
     contact.firstName || contact.first_name || rawPayload.first_name || '',
-    _lastNameIsInstagram ? '' : _rawLastName,
+    (_lastNameIsInstagram || _lastNameIsPhrase) ? '' : _rawLastName,
   ].filter(Boolean).join(' ').trim()
     || contact.full_name || rawPayload.full_name
     || contact.email     || 'Sin nombre';
-  console.log(`[GHL Parser] resolved nombre="${nombre}" (lastNameIsInstagram=${_lastNameIsInstagram})`);
+  console.log(`[GHL Parser] resolved nombre="${nombre}" (lastNameIsInstagram=${_lastNameIsInstagram} lastNameIsPhrase=${_lastNameIsPhrase})`);
 
   const email    = contact.email || rawPayload.email || '';
   const telefono = contact.phone || contact.phone_raw || contact.full_phone_number
