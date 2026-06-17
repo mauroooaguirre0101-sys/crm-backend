@@ -380,14 +380,25 @@ app.get('/leads', validateAccess, async (req, res) => {
     }
 
     // ── Lite mode (no page param): returns ALL leads with minimal fields for stats ──
+    // Uses range-based batching to overcome Supabase's default 1000-row max-rows limit
     if (lite === '1' && !page) {
-      const { data, error } = await supabase.from('leads')
-        .select(LEADS_LITE_FIELDS)
-        .eq('cliente_id', req.cliente_id)
-        .order('created_at', { ascending: false })
-        .limit(15000);
-      if (error) { console.error('❌ GET LEADS lite:', error); return res.status(500).json({ error: error.message }); }
-      return res.json(data);
+      const BATCH = 1000;
+      const MAX   = 20000;
+      let allData = [];
+      let from    = 0;
+      while (allData.length < MAX) {
+        const { data, error } = await supabase.from('leads')
+          .select(LEADS_LITE_FIELDS)
+          .eq('cliente_id', req.cliente_id)
+          .order('created_at', { ascending: false })
+          .range(from, from + BATCH - 1);
+        if (error) { console.error('❌ GET LEADS lite:', error); return res.status(500).json({ error: error.message }); }
+        if (!data || data.length === 0) break;
+        allData = allData.concat(data);
+        if (data.length < BATCH) break;
+        from += BATCH;
+      }
+      return res.json(allData);
     }
 
     // ── Paginated full mode: returns one page of full leads ──
