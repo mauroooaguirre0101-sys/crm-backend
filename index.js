@@ -2744,10 +2744,10 @@ app.post('/holding/gastos', async (req, res) => {
   try {
     const email = req.headers['x-user-email'];
     if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Sin acceso a holding' });
-    const { concepto, monto, mes } = req.body;
+    const { concepto, monto, mes, responsable } = req.body;
     if (!concepto || !monto || !mes) return res.status(400).json({ error: 'concepto, monto y mes son requeridos' });
     const { data, error } = await supabase.from('holding_gastos')
-      .insert({ concepto: concepto.trim(), monto: parseFloat(monto), mes })
+      .insert({ concepto: concepto.trim(), monto: parseFloat(monto), mes, responsable: responsable || 'Mau' })
       .select().single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
