@@ -364,7 +364,7 @@ const LEADS_LITE_FIELDS = [
 
 app.get('/leads', validateAccess, async (req, res) => {
   try {
-    const { after, lite, page, per_page, estado, search, period, mes, vista, sort_by, sort_dir, etiqueta_filter } = req.query;
+    const { after, lite, page, per_page, estado, search, period, mes, vista, sort_by, sort_dir, etiqueta_filter, date_from, date_to } = req.query;
 
     // ── Incremental mode: returns only leads changed since `after` ──
     if (after) {
@@ -424,7 +424,10 @@ app.get('/leads', validateAccess, async (req, res) => {
     if (vista === 'activos')   q = q.neq('estado', 'Perdido');
 
     const now = new Date();
-    if (mes !== undefined && mes !== '') {
+    if (date_from || date_to) {
+      if (date_from) q = q.gte('created_at', new Date(date_from + 'T00:00:00').toISOString());
+      if (date_to)   q = q.lte('created_at', new Date(date_to   + 'T23:59:59').toISOString());
+    } else if (mes !== undefined && mes !== '') {
       const m  = parseInt(mes, 10);
       const yr = now.getFullYear();
       q = q.gte('created_at', new Date(yr, m, 1).toISOString())
@@ -434,7 +437,8 @@ app.get('/leads', validateAccess, async (req, res) => {
         const from = new Date(now); from.setHours(0, 0, 0, 0);
         q = q.gte('created_at', from.toISOString());
       } else if (period === 'semana') {
-        const from = new Date(now); from.setDate(now.getDate() - 7); from.setHours(0, 0, 0, 0);
+        const dow = now.getDay();
+        const from = new Date(now); from.setDate(now.getDate() - (dow === 0 ? 6 : dow - 1)); from.setHours(0, 0, 0, 0);
         q = q.gte('created_at', from.toISOString());
       } else if (period === 'mes') {
         const from = new Date(now.getFullYear(), now.getMonth(), 1);
