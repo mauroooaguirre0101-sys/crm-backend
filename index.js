@@ -900,16 +900,21 @@ app.post('/lead', validateAccess, async (req, res) => {
   try {
     // GHL Custom Webhook sends fields inside customData — fall back to top-level for direct calls
     const src = req.body?.customData || req.body;
+    console.log(`[/lead:1] src (customData o body): ${JSON.stringify(src)}`);
     const { nombre, instagram: instagramRaw, mensaje, origen, tipo, etiqueta } = src;
+    console.log(`[/lead:2] instagramRaw="${instagramRaw}" nombre="${nombre}" etiqueta="${etiqueta}" origen="${origen}"`);
 
     // Normalize instagram: strip leading @, lowercase
     const instagram = (instagramRaw || '').replace(/^@/, '').toLowerCase().trim() || null;
+    console.log(`[/lead:3] instagram normalizado="${instagram}"`);
 
     // Reject GHL placeholder values sent when the custom field is empty
     const INVALID_IG = new Set(['-', '--', 'n/a', 'na', 'none', 'null', 'undefined', 'sin instagram']);
     if (!instagram || INVALID_IG.has(instagram)) {
+      console.log(`[/lead:4] BLOQUEADO por INVALID_IG → instagram="${instagram}" → 400`);
       return res.status(400).json({ error: 'Falta instagram' });
     }
+    console.log(`[/lead:4] instagram válido, continúa`);
 
     // nombre: customData.nombre → req.body.full_name → req.body.first_name → 'Sin nombre'
     const rawNombre = nombre
@@ -924,16 +929,20 @@ app.post('/lead', validateAccess, async (req, res) => {
     const etiquetaFinal = etiqueta || '';
     const tipoLead = 'Organico';
     const now = new Date().toISOString();
+    console.log(`[/lead:5] nombreLimpio="${nombreLimpio}" etiquetaFinal="${etiquetaFinal}" cliente_id="${req.cliente_id}"`);
 
     // Check if lead already exists for this client
-    const { data: existingArr } = await supabase
+    console.log(`[/lead:6] buscando duplicado → instagram="${instagram}" cliente_id="${req.cliente_id}"`);
+    const { data: existingArr, error: searchError } = await supabase
       .from('leads')
       .select('id, etiquetas, etiqueta')
       .eq('instagram', instagram)
       .eq('cliente_id', req.cliente_id)
       .limit(1);
 
+    if (searchError) console.error(`[/lead:6] error búsqueda duplicado:`, searchError);
     const existing = existingArr?.[0] || null;
+    console.log(`[/lead:7] duplicado encontrado: ${existing ? `id=${existing.id}` : 'NO (es lead nuevo)'}`);
 
     if (existing) {
       // Append new etiqueta to array — never overwrite
@@ -942,6 +951,7 @@ app.post('/lead', validateAccess, async (req, res) => {
         : (existing.etiqueta ? [existing.etiqueta] : []);
       const newEtiquetas = etiquetaFinal && !prev.includes(etiquetaFinal) ? [...prev, etiquetaFinal] : prev;
 
+      console.log(`[/lead:8] UPDATE existente id=${existing.id} newEtiquetas=${JSON.stringify(newEtiquetas)}`);
       const { error: updateError } = await supabase
         .from('leads')
         .update({ etiquetas: newEtiquetas, ultima_accion: mensaje || '', updated_at: now })
@@ -952,8 +962,10 @@ app.post('/lead', validateAccess, async (req, res) => {
         console.error('❌ UPDATE LEAD (webhook):', updateError);
         return res.status(500).json({ error: updateError.message });
       }
+      console.log(`[/lead:8] UPDATE OK`);
     } else {
       // New lead
+      console.log(`[/lead:9] INSERT nuevo lead instagram="${instagram}"`);
       const { error: insertError } = await supabase
         .from('leads')
         .insert({
@@ -975,6 +987,7 @@ app.post('/lead', validateAccess, async (req, res) => {
         console.error('❌ INSERT LEAD (webhook):', insertError);
         return res.status(500).json({ error: insertError.message });
       }
+      console.log(`[/lead:9] INSERT OK`);
     }
 
     await supabase
@@ -986,10 +999,11 @@ app.post('/lead', validateAccess, async (req, res) => {
         cliente_id: req.cliente_id
       });
 
+    console.log(`[/lead:10] FINALIZADO → 200 ok`);
     res.json({ ok: true });
 
   } catch (err) {
-    console.error('❌ SERVER:', err);
+    console.error('❌ SERVER /lead:', err);
     res.status(500).json({ error: 'Error servidor' });
   }
 });
