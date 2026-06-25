@@ -941,8 +941,23 @@ app.post('/lead', validateAccess, async (req, res) => {
       .limit(1);
 
     if (searchError) console.error(`[/lead:6] error búsqueda duplicado:`, searchError);
-    const existing = existingArr?.[0] || null;
+    let existing = existingArr?.[0] || null;
     console.log(`[/lead:7] duplicado encontrado: ${existing ? `id=${existing.id}` : 'NO (es lead nuevo)'}`);
+
+    // Secondary dedup by nombre if no instagram match
+    if (!existing && nombreLimpio && nombreLimpio !== 'Sin nombre') {
+      console.log(`[/lead:6b] sin match por instagram, buscando por nombre → "${nombreLimpio}"`);
+      const { data: nameArr } = await supabase
+        .from('leads')
+        .select('id, etiquetas, etiqueta')
+        .ilike('nombre', nombreLimpio.trim())
+        .eq('cliente_id', req.cliente_id)
+        .limit(1);
+      if (nameArr?.[0]) {
+        existing = nameArr[0];
+        console.log(`[/lead:7b] match por nombre → id=${existing.id}, se actualizará etiqueta`);
+      }
+    }
 
     if (existing) {
       // Append new etiqueta to array — never overwrite
