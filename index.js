@@ -6793,11 +6793,11 @@ app.get('/holding/miembros', validateAccess, async (req, res) => {
 
 // POST /holding/miembros
 app.post('/holding/miembros', validateAccess, async (req, res) => {
-  const { nombre, area, rol, foto_url, salario, tareas, doc_rol, clientes_ids } = req.body;
+  const { nombre, area, rol, foto_url, salario, tareas, clientes_ids } = req.body;
   if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
   const now = new Date().toISOString();
   const { data, error } = await supabase.from('holding_miembros')
-    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', doc_rol: doc_rol||false, clientes_ids: clientes_ids||[], created_at: now, updated_at: now })
+    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', clientes_ids: clientes_ids||[], created_at: now, updated_at: now })
     .select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -6806,7 +6806,7 @@ app.post('/holding/miembros', validateAccess, async (req, res) => {
 // PATCH /holding/miembros/:id
 app.patch('/holding/miembros/:id', validateAccess, async (req, res) => {
   const { id } = req.params;
-  const allowed = ['nombre','area','rol','foto_url','salario','tareas','doc_rol','clientes_ids'];
+  const allowed = ['nombre','area','rol','foto_url','salario','tareas','clientes_ids'];
   const upd = {};
   allowed.forEach(k => { if (req.body[k] !== undefined) upd[k] = req.body[k]; });
   upd.updated_at = new Date().toISOString();
@@ -6841,11 +6841,11 @@ app.get('/holding/formularios', validateAccess, async (req, res) => {
 
 // POST /holding/formularios
 app.post('/holding/formularios', validateAccess, async (req, res) => {
-  const { nombre, preguntas, miembros_ids } = req.body;
+  const { nombre, preguntas, miembros_ids, cliente_id } = req.body;
   if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
   const now = new Date().toISOString();
   const { data, error } = await supabase.from('holding_formularios')
-    .insert({ nombre, preguntas: preguntas||[], miembros_ids: miembros_ids||[], created_at: now, updated_at: now })
+    .insert({ nombre, preguntas: preguntas||[], miembros_ids: miembros_ids||[], cliente_id: cliente_id||'', created_at: now, updated_at: now })
     .select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -6853,11 +6853,12 @@ app.post('/holding/formularios', validateAccess, async (req, res) => {
 
 // PATCH /holding/formularios/:id
 app.patch('/holding/formularios/:id', validateAccess, async (req, res) => {
-  const { nombre, preguntas, miembros_ids } = req.body;
+  const { nombre, preguntas, miembros_ids, cliente_id } = req.body;
   const upd = { updated_at: new Date().toISOString() };
   if (nombre !== undefined) upd.nombre = nombre;
   if (preguntas !== undefined) upd.preguntas = preguntas;
   if (miembros_ids !== undefined) upd.miembros_ids = miembros_ids;
+  if (cliente_id !== undefined) upd.cliente_id = cliente_id;
   const { data, error } = await supabase.from('holding_formularios').update(upd).eq('id', req.params.id).select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
