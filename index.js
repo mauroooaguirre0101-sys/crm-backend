@@ -6757,6 +6757,23 @@ app.get('/ghl/appointments', async (req, res) => {
   }
 });
 
+// GET /holding-metrics?cliente_id=&mes=&anio=  — financial summary for one client
+app.get('/holding-metrics', validateAccess, async (req, res) => {
+  const { cliente_id, mes, anio } = req.query;
+  if (!cliente_id) return res.status(400).json({ error: 'cliente_id requerido' });
+  const mesNum = Number(mes);
+  const anioNum = Number(anio) || new Date().getFullYear();
+  const from = new Date(anioNum, mesNum, 1).toISOString();
+  const to   = new Date(anioNum, mesNum + 1, 0, 23, 59, 59).toISOString();
+  const [{ data: ingresos }, { data: leads }] = await Promise.all([
+    supabase.from('ingresos').select('monto_usd,cash_usd').eq('cliente_id', cliente_id).gte('fecha', from.slice(0,10)).lte('fecha', to.slice(0,10)),
+    supabase.from('leads').select('id', { count: 'exact', head: true }).eq('cliente_id', cliente_id)
+  ]);
+  const facturacion = (ingresos||[]).reduce((s,r)=>s+(+r.monto_usd||0),0);
+  const cash_collected = (ingresos||[]).reduce((s,r)=>s+(+r.cash_usd||0),0);
+  res.json({ facturacion, cash_collected, leads_activos: leads?.length || 0 });
+});
+
 // ── HOLDING EQUIPO ──────────────────────────────────────────────────────────
 
 // GET /holding/miembros
@@ -6874,46 +6891,69 @@ app.post('/holding/respuestas', async (req, res) => {
   res.json({ ok: true, data: result.data });
 });
 
-// POST /holding/reporte-ia
+// POST /holding/reporte-ia  — global report per client
 app.post('/holding/reporte-ia', validateAccess, async (req, res) => {
-  const { tipo, mes, anio, facturacion, cash_collected } = req.body;
+  // negocios: [{ cliente_id, label, facturacion, cash_collected, leads_activos }]
+  const { tipo, mes, anio, negocios } = req.body;
   try {
     const [{ data: miembros }, { data: respuestas }] = await Promise.all([
       supabase.from('holding_miembros').select('*'),
-      supabase.from('holding_respuestas').select('*, holding_miembros(nombre,rol,area)').eq('anio', anio).eq('mes', mes)
+      supabase.from('holding_respuestas').select('*').eq('anio', anio).eq('mes', mes)
     ]);
 
-    const { data: formularios } = await supabase.from('holding_formularios').select('*');
+    const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
 
-    const resumenMiembros = (miembros||[]).map(m => {
-      const reps = (respuestas||[]).filter(r => r.miembro_id === m.id);
-      const semanas = reps.map(r => r.semana);
-      return { nombre: m.nombre, rol: m.rol, area: m.area, semanas_completadas: semanas, total: semanas.length, respuestas: reps.map(r => ({ semana: r.semana, respuestas: r.respuestas })) };
+    // Group members by cliente_id; only include clients with assigned members
+    const negociosConMiembros = (negocios||[]).filter(n => {
+      return (miembros||[]).some(m => m.cliente_id === n.cliente_id);
     });
 
-    const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-    const prompt = `Sos un analista de rendimiento de equipos. Generá un reporte ${tipo==='mensual'?'mensual':'semanal'} del equipo de ${meses[mes]} ${anio}.
+    const resumenNegocios = negociosConMiembros.map(n => {
+      const miembrosNegocio = (miembros||[]).filter(m => m.cliente_id === n.cliente_id);
+      const datosEquipo = miembrosNegocio.map(m => {
+        const reps = (respuestas||[]).filter(r => r.miembro_id === m.id);
+        return {
+          nombre: m.nombre, rol: m.rol, area: m.area,
+          semanas_completadas: reps.map(r => r.semana),
+          respuestas: reps.map(r => ({ semana: r.semana, respuestas: r.respuestas }))
+        };
+      });
+      return {
+        negocio: n.label || n.cliente_id,
+        facturacion: n.facturacion || 0,
+        cash_collected: n.cash_collected || 0,
+        leads_activos: n.leads_activos || 0,
+        equipo: datosEquipo
+      };
+    });
 
-Datos del equipo:
-${JSON.stringify(resumenMiembros, null, 2)}
+    const prompt = `Sos un analista estratégico de una agencia de ventas. Generá un reporte ${tipo==='mensual'?'mensual':'semanal'} del holding para ${meses[mes]} ${anio}.
 
-Facturación del mes: ${facturacion||'No proporcionada'}
-Cash collected: ${cash_collected||'No proporcionado'}
+DATOS POR NEGOCIO:
+${resumenNegocios.map(n => `
+--- NEGOCIO: ${n.negocio} ---
+Facturación: $${n.facturacion}
+Cash Collected: $${n.cash_collected}
+Leads activos en CRM: ${n.leads_activos}
+Equipo asignado:
+${JSON.stringify(n.equipo, null, 2)}
+`).join('\n')}
 
-Generá un reporte ejecutivo con:
-1. Resumen general del equipo
-2. Rendimiento por área
-3. Personas con bajo rendimiento (menos de 2 semanas completadas)
-4. Cuellos de botella identificados
-5. Conclusiones y pasos a ejecutar por área
-6. Métricas del negocio (facturación / cash)
+Para CADA negocio generá:
+1. Estado actual (facturación, cash, leads)
+2. Rendimiento del equipo asignado (quién reportó y quién no)
+3. Problemas identificados en base a las respuestas del equipo
+4. Cuellos de botella operativos
+5. Pasos de acción concretos para la próxima semana
 
-Formato: markdown estructurado, claro y accionable.`;
+Luego una sección final: "CONCLUSIONES GENERALES DEL HOLDING" con visión global.
+
+Formato: markdown estructurado, claro, directo al punto y accionable.`;
 
     const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 3000, messages: [{ role: 'user', content: prompt }] })
     });
     const aiJson = await aiRes.json();
     const reporte = aiJson?.content?.[0]?.text || 'No se pudo generar el reporte.';
