@@ -6817,7 +6817,10 @@ app.patch('/holding/miembros/:id', validateAccess, async (req, res) => {
 
 // DELETE /holding/miembros/:id
 app.delete('/holding/miembros/:id', validateAccess, async (req, res) => {
-  const { error } = await supabase.from('holding_miembros').delete().eq('id', req.params.id);
+  const id = req.params.id;
+  // Cascade: delete all responses from this member
+  await supabase.from('holding_respuestas').delete().eq('miembro_id', id);
+  const { error } = await supabase.from('holding_miembros').delete().eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
