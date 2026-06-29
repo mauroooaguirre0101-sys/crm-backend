@@ -6757,21 +6757,29 @@ app.get('/ghl/appointments', async (req, res) => {
   }
 });
 
-// GET /holding-metrics?cliente_id=&mes=&anio=  — financial summary for one client
+// GET /holding-metrics?cliente_id=&mes=&anio=
 app.get('/holding-metrics', validateAccess, async (req, res) => {
   const { cliente_id, mes, anio } = req.query;
   if (!cliente_id) return res.status(400).json({ error: 'cliente_id requerido' });
   const mesNum = Number(mes);
   const anioNum = Number(anio) || new Date().getFullYear();
-  const from = new Date(anioNum, mesNum, 1).toISOString();
-  const to   = new Date(anioNum, mesNum + 1, 0, 23, 59, 59).toISOString();
-  const [{ data: ingresos }, { data: leads }] = await Promise.all([
-    supabase.from('ingresos').select('monto_usd,cash_usd').eq('cliente_id', cliente_id).gte('fecha', from.slice(0,10)).lte('fecha', to.slice(0,10)),
-    supabase.from('leads').select('id', { count: 'exact', head: true }).eq('cliente_id', cliente_id)
+  const fechaFrom = new Date(anioNum, mesNum, 1).toISOString().slice(0,10);
+  const fechaTo   = new Date(anioNum, mesNum + 1, 0).toISOString().slice(0,10);
+  const ESTADOS_AGENDADO = ['Agendado','Cerrado','Cerrada','Seña','Perdido Post Call','Seguimiento Post Call','Re agendado','No Show'];
+  const ESTADOS_CIERRE   = ['Cerrado','Cerrada','Seña'];
+  const [{ data: ingresos }, { data: leadsAll }, { data: calls }] = await Promise.all([
+    supabase.from('ingresos').select('monto_usd,cash_usd').eq('cliente_id', cliente_id).gte('fecha', fechaFrom).lte('fecha', fechaTo),
+    supabase.from('leads').select('estado,created_at').eq('cliente_id', cliente_id).gte('created_at', `${fechaFrom}T00:00:00`).lte('created_at', `${fechaTo}T23:59:59`),
+    supabase.from('calls').select('estado,fecha_llamada,created_at').eq('cliente_id', cliente_id)
   ]);
-  const facturacion = (ingresos||[]).reduce((s,r)=>s+(+r.monto_usd||0),0);
+  const facturacion    = (ingresos||[]).reduce((s,r)=>s+(+r.monto_usd||0),0);
   const cash_collected = (ingresos||[]).reduce((s,r)=>s+(+r.cash_usd||0),0);
-  res.json({ facturacion, cash_collected, leads_activos: leads?.length || 0 });
+  const leads_total    = (leadsAll||[]).length;
+  const agendas        = (leadsAll||[]).filter(l=>ESTADOS_AGENDADO.includes(l.estado)).length;
+  const cierres_leads  = (leadsAll||[]).filter(l=>ESTADOS_CIERRE.includes(l.estado)).length;
+  const callsEnMes = (calls||[]).filter(c=>{ const d=(c.fecha_llamada||c.created_at||'').slice(0,10); return d>=fechaFrom&&d<=fechaTo; });
+  const cierres = Math.max(cierres_leads, callsEnMes.filter(c=>ESTADOS_CIERRE.includes(c.estado)).length);
+  res.json({ facturacion, cash_collected, leads_total, agendas, cierres });
 });
 
 // ── HOLDING EQUIPO ──────────────────────────────────────────────────────────
@@ -6785,11 +6793,11 @@ app.get('/holding/miembros', validateAccess, async (req, res) => {
 
 // POST /holding/miembros
 app.post('/holding/miembros', validateAccess, async (req, res) => {
-  const { nombre, area, rol, foto_url, salario, tareas, doc_rol } = req.body;
+  const { nombre, area, rol, foto_url, salario, tareas, doc_rol, clientes_ids } = req.body;
   if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
   const now = new Date().toISOString();
   const { data, error } = await supabase.from('holding_miembros')
-    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', doc_rol: doc_rol||false, created_at: now, updated_at: now })
+    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', doc_rol: doc_rol||false, clientes_ids: clientes_ids||[], created_at: now, updated_at: now })
     .select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -6798,7 +6806,7 @@ app.post('/holding/miembros', validateAccess, async (req, res) => {
 // PATCH /holding/miembros/:id
 app.patch('/holding/miembros/:id', validateAccess, async (req, res) => {
   const { id } = req.params;
-  const allowed = ['nombre','area','rol','foto_url','salario','tareas','doc_rol'];
+  const allowed = ['nombre','area','rol','foto_url','salario','tareas','doc_rol','clientes_ids'];
   const upd = {};
   allowed.forEach(k => { if (req.body[k] !== undefined) upd[k] = req.body[k]; });
   upd.updated_at = new Date().toISOString();
