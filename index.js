@@ -6866,7 +6866,10 @@ app.patch('/holding/formularios/:id', validateAccess, async (req, res) => {
 
 // DELETE /holding/formularios/:id
 app.delete('/holding/formularios/:id', validateAccess, async (req, res) => {
-  const { error } = await supabase.from('holding_formularios').delete().eq('id', req.params.id);
+  const id = req.params.id;
+  // Cascade: delete all responses tied to this form first
+  await supabase.from('holding_respuestas').delete().eq('formulario_id', id);
+  const { error } = await supabase.from('holding_formularios').delete().eq('id', id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
 });
@@ -6967,6 +6970,99 @@ Formato: markdown estructurado, claro, directo al punto y accionable.`;
     const aiJson = await aiRes.json();
     const reporte = aiJson?.content?.[0]?.text || 'No se pudo generar el reporte.';
     res.json({ ok: true, reporte });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /holding/delete-cliente-counts — preview de cuántos registros se van a borrar
+app.get('/holding/delete-cliente-counts', async (req, res) => {
+  const OWNER_EMAIL = 'maurooo.aguirre0101@gmail.com';
+  const email = req.headers['x-user-email'];
+  if (email !== OWNER_EMAIL) return res.status(403).json({ error: 'Sin permiso' });
+  const { cliente_id } = req.query;
+  if (!cliente_id) return res.status(400).json({ error: 'cliente_id requerido' });
+  const [{ count: leads }, { count: llamadas }, { count: ingresos }] = await Promise.all([
+    supabase.from('leads').select('*', { count: 'exact', head: true }).eq('cliente_id', cliente_id),
+    supabase.from('calls').select('*', { count: 'exact', head: true }).eq('cliente_id', cliente_id),
+    supabase.from('ingresos').select('*', { count: 'exact', head: true }).eq('cliente_id', cliente_id),
+  ]);
+  res.json({ leads: leads||0, llamadas: llamadas||0, ingresos: ingresos||0 });
+});
+
+// DELETE /holding/delete-cliente — solo para el owner, elimina todo y envía email de auditoría
+app.delete('/holding/delete-cliente', async (req, res) => {
+  const OWNER_EMAIL = 'maurooo.aguirre0101@gmail.com';
+  const email = req.headers['x-user-email'];
+  if (email !== OWNER_EMAIL) return res.status(403).json({ error: 'Sin permiso' });
+
+  const { cliente_id, confirmacion } = req.body;
+  if (!cliente_id) return res.status(400).json({ error: 'cliente_id requerido' });
+  if (confirmacion !== 'ELIMINAR') return res.status(400).json({ error: 'Confirmación inválida' });
+
+  // Fetch client label before deleting
+  const { data: clienteRow } = await supabase.from('clientes').select('nombre,id').eq('id', cliente_id).single();
+  const clienteLabel = clienteRow?.nombre || cliente_id;
+
+  const counts = {};
+  try {
+    const [{ count: cLeads }, { count: cCalls }, { count: cIngresos }] = await Promise.all([
+      supabase.from('leads').select('*', { count: 'exact', head: true }).eq('cliente_id', cliente_id),
+      supabase.from('calls').select('*', { count: 'exact', head: true }).eq('cliente_id', cliente_id),
+      supabase.from('ingresos').select('*', { count: 'exact', head: true }).eq('cliente_id', cliente_id),
+    ]);
+    counts.leads = cLeads || 0;
+    counts.llamadas = cCalls || 0;
+    counts.ingresos = cIngresos || 0;
+
+    await Promise.all([
+      supabase.from('leads').delete().eq('cliente_id', cliente_id),
+      supabase.from('calls').delete().eq('cliente_id', cliente_id),
+      supabase.from('ingresos').delete().eq('cliente_id', cliente_id),
+    ]);
+    await supabase.from('user_clientes').delete().eq('cliente_id', cliente_id);
+    await supabase.from('clientes').delete().eq('id', cliente_id);
+
+    // Email de auditoría
+    try {
+      const transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com', port: 465, secure: true,
+        auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
+      });
+      const fecha = new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', dateStyle: 'full', timeStyle: 'short' });
+      await transporter.sendMail({
+        from: `CRM <${process.env.GMAIL_USER}>`,
+        to: OWNER_EMAIL,
+        subject: `🗑️ Cliente eliminado: ${clienteLabel}`,
+        html: `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f8;font-family:Inter,Arial,sans-serif">
+<div style="max-width:520px;margin:40px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08)">
+  <div style="background:#0a0b0f;padding:22px 32px">
+    <div style="font-size:17px;font-weight:800;color:#ef4444;letter-spacing:-.3px">🗑️ Cliente Eliminado del CRM</div>
+  </div>
+  <div style="padding:28px 32px">
+    <p style="font-size:15px;font-weight:700;color:#111;margin:0 0 18px">Se eliminó un cliente de manera permanente.</p>
+    <div style="background:#fef2f2;border:1px solid #fee2e2;border-left:4px solid #ef4444;border-radius:10px;padding:16px 20px;margin-bottom:24px">
+      <div style="font-size:11px;color:#999;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Detalle</div>
+      <div style="font-size:14px;color:#111;margin-bottom:4px"><b>Cliente:</b> ${clienteLabel} (${cliente_id})</div>
+      <div style="font-size:14px;color:#111;margin-bottom:4px"><b>Eliminado por:</b> ${email}</div>
+      <div style="font-size:14px;color:#111;margin-bottom:12px"><b>Fecha:</b> ${fecha}</div>
+      <div style="border-top:1px solid #fee2e2;padding-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
+        <div><div style="font-size:11px;color:#999;font-weight:700;text-transform:uppercase">Leads</div><div style="font-size:20px;font-weight:800;color:#ef4444">${counts.leads}</div></div>
+        <div><div style="font-size:11px;color:#999;font-weight:700;text-transform:uppercase">Llamadas</div><div style="font-size:20px;font-weight:800;color:#ef4444">${counts.llamadas}</div></div>
+        <div><div style="font-size:11px;color:#999;font-weight:700;text-transform:uppercase">Ingresos</div><div style="font-size:20px;font-weight:800;color:#ef4444">${counts.ingresos}</div></div>
+      </div>
+    </div>
+    <p style="font-size:12px;color:#999;margin:0">Esta acción es irreversible. Si fue un error, deberás restaurar manualmente desde un backup.</p>
+  </div>
+</div>
+</body></html>`
+      });
+    } catch (mailErr) {
+      console.error('📧 Error email auditoría:', mailErr.message);
+    }
+
+    res.json({ ok: true, eliminado: clienteLabel, counts });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
