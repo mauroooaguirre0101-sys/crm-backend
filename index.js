@@ -6793,11 +6793,11 @@ app.get('/holding/miembros', validateAccess, async (req, res) => {
 
 // POST /holding/miembros
 app.post('/holding/miembros', validateAccess, async (req, res) => {
-  const { nombre, area, rol, foto_url, salario, tareas, clientes_ids, email } = req.body;
+  const { nombre, area, areas, rol, foto_url, salario, tareas, clientes_ids, email } = req.body;
   if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
   const now = new Date().toISOString();
   const { data, error } = await supabase.from('holding_miembros')
-    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', clientes_ids: clientes_ids||[], email: email||'', created_at: now, updated_at: now })
+    .insert({ nombre, area: area||'', areas: areas||[], rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', clientes_ids: clientes_ids||[], email: email||'', created_at: now, updated_at: now })
     .select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -6806,7 +6806,7 @@ app.post('/holding/miembros', validateAccess, async (req, res) => {
 // PATCH /holding/miembros/:id
 app.patch('/holding/miembros/:id', validateAccess, async (req, res) => {
   const { id } = req.params;
-  const allowed = ['nombre','area','rol','foto_url','salario','tareas','clientes_ids','email'];
+  const allowed = ['nombre','area','areas','rol','foto_url','salario','tareas','clientes_ids','email'];
   const upd = {};
   allowed.forEach(k => { if (req.body[k] !== undefined) upd[k] = req.body[k]; });
   upd.updated_at = new Date().toISOString();
