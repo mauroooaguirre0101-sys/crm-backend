@@ -6757,6 +6757,172 @@ app.get('/ghl/appointments', async (req, res) => {
   }
 });
 
+// ── HOLDING EQUIPO ──────────────────────────────────────────────────────────
+
+// GET /holding/miembros
+app.get('/holding/miembros', validateAccess, async (req, res) => {
+  const { data, error } = await supabase.from('holding_miembros').select('*').order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// POST /holding/miembros
+app.post('/holding/miembros', validateAccess, async (req, res) => {
+  const { nombre, area, rol, foto_url, salario, tareas, doc_rol } = req.body;
+  if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
+  const now = new Date().toISOString();
+  const { data, error } = await supabase.from('holding_miembros')
+    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', doc_rol: doc_rol||false, created_at: now, updated_at: now })
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// PATCH /holding/miembros/:id
+app.patch('/holding/miembros/:id', validateAccess, async (req, res) => {
+  const { id } = req.params;
+  const allowed = ['nombre','area','rol','foto_url','salario','tareas','doc_rol'];
+  const upd = {};
+  allowed.forEach(k => { if (req.body[k] !== undefined) upd[k] = req.body[k]; });
+  upd.updated_at = new Date().toISOString();
+  const { data, error } = await supabase.from('holding_miembros').update(upd).eq('id', id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// DELETE /holding/miembros/:id
+app.delete('/holding/miembros/:id', validateAccess, async (req, res) => {
+  const { error } = await supabase.from('holding_miembros').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// GET /holding/miembro-publico/:id  (public — for form page)
+app.get('/holding/miembro-publico/:id', async (req, res) => {
+  const { data: m, error } = await supabase.from('holding_miembros').select('id,nombre,area,rol').eq('id', req.params.id).single();
+  if (error || !m) return res.status(404).json({ error: 'Miembro no encontrado' });
+  // Find assigned form
+  const { data: forms } = await supabase.from('holding_formularios').select('*');
+  const form = (forms||[]).find(f => Array.isArray(f.miembros_ids) && f.miembros_ids.includes(m.id));
+  res.json({ miembro: m, formulario: form || null });
+});
+
+// GET /holding/formularios
+app.get('/holding/formularios', validateAccess, async (req, res) => {
+  const { data, error } = await supabase.from('holding_formularios').select('*').order('created_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// POST /holding/formularios
+app.post('/holding/formularios', validateAccess, async (req, res) => {
+  const { nombre, preguntas, miembros_ids } = req.body;
+  if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
+  const now = new Date().toISOString();
+  const { data, error } = await supabase.from('holding_formularios')
+    .insert({ nombre, preguntas: preguntas||[], miembros_ids: miembros_ids||[], created_at: now, updated_at: now })
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// PATCH /holding/formularios/:id
+app.patch('/holding/formularios/:id', validateAccess, async (req, res) => {
+  const { nombre, preguntas, miembros_ids } = req.body;
+  const upd = { updated_at: new Date().toISOString() };
+  if (nombre !== undefined) upd.nombre = nombre;
+  if (preguntas !== undefined) upd.preguntas = preguntas;
+  if (miembros_ids !== undefined) upd.miembros_ids = miembros_ids;
+  const { data, error } = await supabase.from('holding_formularios').update(upd).eq('id', req.params.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// DELETE /holding/formularios/:id
+app.delete('/holding/formularios/:id', validateAccess, async (req, res) => {
+  const { error } = await supabase.from('holding_formularios').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// GET /holding/respuestas?miembro_id=&mes=&anio=
+app.get('/holding/respuestas', validateAccess, async (req, res) => {
+  const { miembro_id, mes, anio } = req.query;
+  let q = supabase.from('holding_respuestas').select('*');
+  if (miembro_id) q = q.eq('miembro_id', miembro_id);
+  if (mes !== undefined) q = q.eq('mes', Number(mes));
+  if (anio !== undefined) q = q.eq('anio', Number(anio));
+  const { data, error } = await q.order('semana', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// POST /holding/respuestas  (public — member submits form)
+app.post('/holding/respuestas', async (req, res) => {
+  const { miembro_id, formulario_id, semana, mes, anio, respuestas } = req.body;
+  if (!miembro_id || !semana || mes === undefined || !anio) return res.status(400).json({ error: 'Faltan campos requeridos' });
+  // Upsert: one response per member per week per month/year
+  const { data: existing } = await supabase.from('holding_respuestas')
+    .select('id').eq('miembro_id', miembro_id).eq('semana', semana).eq('mes', mes).eq('anio', anio).single();
+  let result;
+  if (existing) {
+    result = await supabase.from('holding_respuestas').update({ respuestas: respuestas||{}, formulario_id, updated_at: new Date().toISOString() }).eq('id', existing.id).select().single();
+  } else {
+    result = await supabase.from('holding_respuestas').insert({ miembro_id, formulario_id: formulario_id||null, semana, mes, anio, respuestas: respuestas||{}, created_at: new Date().toISOString() }).select().single();
+  }
+  if (result.error) return res.status(500).json({ error: result.error.message });
+  res.json({ ok: true, data: result.data });
+});
+
+// POST /holding/reporte-ia
+app.post('/holding/reporte-ia', validateAccess, async (req, res) => {
+  const { tipo, mes, anio, facturacion, cash_collected } = req.body;
+  try {
+    const [{ data: miembros }, { data: respuestas }] = await Promise.all([
+      supabase.from('holding_miembros').select('*'),
+      supabase.from('holding_respuestas').select('*, holding_miembros(nombre,rol,area)').eq('anio', anio).eq('mes', mes)
+    ]);
+
+    const { data: formularios } = await supabase.from('holding_formularios').select('*');
+
+    const resumenMiembros = (miembros||[]).map(m => {
+      const reps = (respuestas||[]).filter(r => r.miembro_id === m.id);
+      const semanas = reps.map(r => r.semana);
+      return { nombre: m.nombre, rol: m.rol, area: m.area, semanas_completadas: semanas, total: semanas.length, respuestas: reps.map(r => ({ semana: r.semana, respuestas: r.respuestas })) };
+    });
+
+    const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    const prompt = `Sos un analista de rendimiento de equipos. Generá un reporte ${tipo==='mensual'?'mensual':'semanal'} del equipo de ${meses[mes]} ${anio}.
+
+Datos del equipo:
+${JSON.stringify(resumenMiembros, null, 2)}
+
+Facturación del mes: ${facturacion||'No proporcionada'}
+Cash collected: ${cash_collected||'No proporcionado'}
+
+Generá un reporte ejecutivo con:
+1. Resumen general del equipo
+2. Rendimiento por área
+3. Personas con bajo rendimiento (menos de 2 semanas completadas)
+4. Cuellos de botella identificados
+5. Conclusiones y pasos a ejecutar por área
+6. Métricas del negocio (facturación / cash)
+
+Formato: markdown estructurado, claro y accionable.`;
+
+    const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
+    });
+    const aiJson = await aiRes.json();
+    const reporte = aiJson?.content?.[0]?.text || 'No se pudo generar el reporte.';
+    res.json({ ok: true, reporte });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
