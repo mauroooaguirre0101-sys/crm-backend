@@ -6981,6 +6981,48 @@ app.get('/holding/notify', async (req, res) => {
   } catch (e) { res.json({ show: false }); }
 });
 
+// POST /holding/notify-email  — send reminder email to the member (called from frontend at night)
+app.post('/holding/notify-email', async (req, res) => {
+  const { email, tipo, formulario_nombre, link } = req.body;
+  if (!email || !process.env.GMAIL_USER || !process.env.GMAIL_PASS) return res.json({ ok: false });
+  try {
+    const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com', port: 465, secure: true,
+      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_PASS },
+    });
+    const tipoLabel = tipo === 'daily' ? 'Daily' : 'Semanal';
+    const icon      = tipo === 'daily' ? '⚡' : '📅';
+    const color     = tipo === 'daily' ? '#fb923c' : '#60a5fa';
+    const linkBase  = 'https://noble-determination-production.up.railway.app';
+    const fullLink  = link?.startsWith('http') ? link : `https://lopezvalen.github.io/crm-frontend${link}`;
+    await transporter.sendMail({
+      from: `CRM Equipo <${process.env.GMAIL_USER}>`,
+      to: email,
+      subject: `${icon} Recordatorio: Formulario ${tipoLabel} pendiente`,
+      html: `<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f8;font-family:Inter,Arial,sans-serif">
+<div style="max-width:520px;margin:40px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.08)">
+  <div style="background:#0a0b0f;padding:22px 32px">
+    <div style="font-size:17px;font-weight:800;color:${color};letter-spacing:-.3px">${icon} Formulario ${tipoLabel} pendiente</div>
+  </div>
+  <div style="padding:28px 32px">
+    <p style="font-size:15px;color:#333;margin:0 0 16px;line-height:1.6">Todavía no completaste tu formulario <b>${tipoLabel}</b> de hoy${formulario_nombre ? ` (<i>${formulario_nombre}</i>)` : ''}.</p>
+    <p style="font-size:13px;color:#666;margin:0 0 22px">Completalo antes de que termine el día para que quede registrado.</p>
+    <a href="${fullLink}" style="display:inline-block;background:${color};color:#fff;font-weight:700;font-size:14px;padding:12px 28px;border-radius:8px;text-decoration:none">Completar formulario →</a>
+  </div>
+  <div style="padding:14px 32px 20px;border-top:1px solid #f0f0f0">
+    <p style="font-size:11px;color:#bbb;margin:0">Enviado automáticamente por el CRM del equipo.</p>
+  </div>
+</div>
+</body></html>`
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('notify-email error:', e.message);
+    res.json({ ok: false });
+  }
+});
+
 // POST /holding/reporte-ia  — global report per client
 app.post('/holding/reporte-ia', validateAccess, async (req, res) => {
   // negocios: [{ cliente_id, label, facturacion, cash_collected, leads_activos }]
