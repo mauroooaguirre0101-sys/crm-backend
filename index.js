@@ -6793,11 +6793,11 @@ app.get('/holding/miembros', validateAccess, async (req, res) => {
 
 // POST /holding/miembros
 app.post('/holding/miembros', validateAccess, async (req, res) => {
-  const { nombre, area, rol, foto_url, salario, tareas, clientes_ids } = req.body;
+  const { nombre, area, rol, foto_url, salario, tareas, clientes_ids, email } = req.body;
   if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
   const now = new Date().toISOString();
   const { data, error } = await supabase.from('holding_miembros')
-    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', clientes_ids: clientes_ids||[], created_at: now, updated_at: now })
+    .insert({ nombre, area: area||'', rol: rol||'', foto_url: foto_url||'', salario: salario||'', tareas: tareas||'', clientes_ids: clientes_ids||[], email: email||'', created_at: now, updated_at: now })
     .select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -6806,7 +6806,7 @@ app.post('/holding/miembros', validateAccess, async (req, res) => {
 // PATCH /holding/miembros/:id
 app.patch('/holding/miembros/:id', validateAccess, async (req, res) => {
   const { id } = req.params;
-  const allowed = ['nombre','area','rol','foto_url','salario','tareas','clientes_ids'];
+  const allowed = ['nombre','area','rol','foto_url','salario','tareas','clientes_ids','email'];
   const upd = {};
   allowed.forEach(k => { if (req.body[k] !== undefined) upd[k] = req.body[k]; });
   upd.updated_at = new Date().toISOString();
@@ -6844,11 +6844,11 @@ app.get('/holding/formularios', validateAccess, async (req, res) => {
 
 // POST /holding/formularios
 app.post('/holding/formularios', validateAccess, async (req, res) => {
-  const { nombre, preguntas, miembros_ids, cliente_id } = req.body;
+  const { nombre, preguntas, miembros_ids, cliente_id, tipo } = req.body;
   if (!nombre) return res.status(400).json({ error: 'nombre requerido' });
   const now = new Date().toISOString();
   const { data, error } = await supabase.from('holding_formularios')
-    .insert({ nombre, preguntas: preguntas||[], miembros_ids: miembros_ids||[], cliente_id: cliente_id||'', created_at: now, updated_at: now })
+    .insert({ nombre, preguntas: preguntas||[], miembros_ids: miembros_ids||[], cliente_id: cliente_id||'', tipo: tipo||'semanal', created_at: now, updated_at: now })
     .select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -6856,12 +6856,13 @@ app.post('/holding/formularios', validateAccess, async (req, res) => {
 
 // PATCH /holding/formularios/:id
 app.patch('/holding/formularios/:id', validateAccess, async (req, res) => {
-  const { nombre, preguntas, miembros_ids, cliente_id } = req.body;
+  const { nombre, preguntas, miembros_ids, cliente_id, tipo } = req.body;
   const upd = { updated_at: new Date().toISOString() };
   if (nombre !== undefined) upd.nombre = nombre;
   if (preguntas !== undefined) upd.preguntas = preguntas;
   if (miembros_ids !== undefined) upd.miembros_ids = miembros_ids;
   if (cliente_id !== undefined) upd.cliente_id = cliente_id;
+  if (tipo !== undefined) upd.tipo = tipo;
   const { data, error } = await supabase.from('holding_formularios').update(upd).eq('id', req.params.id).select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -6877,33 +6878,107 @@ app.delete('/holding/formularios/:id', validateAccess, async (req, res) => {
   res.json({ ok: true });
 });
 
-// GET /holding/respuestas?miembro_id=&mes=&anio=
+// GET /holding/formularios-publico?miembro_id=  (public — returns forms assigned to a member)
+app.get('/holding/formularios-publico', async (req, res) => {
+  const { miembro_id } = req.query;
+  if (!miembro_id) return res.status(400).json({ error: 'miembro_id requerido' });
+  const { data: forms } = await supabase.from('holding_formularios').select('*');
+  const assigned = (forms||[]).filter(f => (f.miembros_ids||[]).includes(miembro_id));
+  res.json(assigned);
+});
+
+// GET /holding/respuestas?miembro_id=&mes=&anio=&fecha=
 app.get('/holding/respuestas', validateAccess, async (req, res) => {
-  const { miembro_id, mes, anio } = req.query;
+  const { miembro_id, mes, anio, fecha } = req.query;
   let q = supabase.from('holding_respuestas').select('*');
   if (miembro_id) q = q.eq('miembro_id', miembro_id);
-  if (mes !== undefined) q = q.eq('mes', Number(mes));
-  if (anio !== undefined) q = q.eq('anio', Number(anio));
-  const { data, error } = await q.order('semana', { ascending: true });
+  if (fecha) q = q.eq('fecha', fecha);
+  else {
+    if (mes !== undefined) q = q.eq('mes', Number(mes));
+    if (anio !== undefined) q = q.eq('anio', Number(anio));
+  }
+  const { data, error } = await q.order('created_at', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
 // POST /holding/respuestas  (public — member submits form)
 app.post('/holding/respuestas', async (req, res) => {
-  const { miembro_id, formulario_id, semana, mes, anio, respuestas } = req.body;
-  if (!miembro_id || !semana || mes === undefined || !anio) return res.status(400).json({ error: 'Faltan campos requeridos' });
-  // Upsert: one response per member per week per month/year
-  const { data: existing } = await supabase.from('holding_respuestas')
-    .select('id').eq('miembro_id', miembro_id).eq('semana', semana).eq('mes', mes).eq('anio', anio).single();
-  let result;
-  if (existing) {
-    result = await supabase.from('holding_respuestas').update({ respuestas: respuestas||{}, formulario_id, updated_at: new Date().toISOString() }).eq('id', existing.id).select().single();
+  const { miembro_id, formulario_id, semana, mes, anio, respuestas, fecha } = req.body;
+  if (!miembro_id || mes === undefined || !anio) return res.status(400).json({ error: 'Faltan campos requeridos' });
+  let existing;
+  if (fecha) {
+    // Daily: upsert by miembro + fecha
+    const { data } = await supabase.from('holding_respuestas')
+      .select('id').eq('miembro_id', miembro_id).eq('fecha', fecha).single();
+    existing = data;
   } else {
-    result = await supabase.from('holding_respuestas').insert({ miembro_id, formulario_id: formulario_id||null, semana, mes, anio, respuestas: respuestas||{}, created_at: new Date().toISOString() }).select().single();
+    // Weekly: upsert by miembro + semana + mes + anio
+    const { data } = await supabase.from('holding_respuestas')
+      .select('id').eq('miembro_id', miembro_id).eq('semana', semana||1).eq('mes', mes).eq('anio', anio).single();
+    existing = data;
+  }
+  let result;
+  const payload = { respuestas: respuestas||{}, formulario_id: formulario_id||null, semana: semana||null, mes, anio, fecha: fecha||null, updated_at: new Date().toISOString() };
+  if (existing) {
+    result = await supabase.from('holding_respuestas').update(payload).eq('id', existing.id).select().single();
+  } else {
+    result = await supabase.from('holding_respuestas').insert({ miembro_id, ...payload, created_at: new Date().toISOString() }).select().single();
   }
   if (result.error) return res.status(500).json({ error: result.error.message });
   res.json({ ok: true, data: result.data });
+});
+
+// GET /holding/notify?email=  (public — check if user needs to complete a form today)
+app.get('/holding/notify', async (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.json({ show: false });
+  try {
+    // Find member by email
+    const { data: miembros } = await supabase.from('holding_miembros').select('*').ilike('email', email.trim()).limit(1);
+    const miembro = miembros?.[0];
+    if (!miembro) return res.json({ show: false });
+
+    const now = new Date();
+    const dow = now.getDay(); // 0=Sun,1=Mon,...,5=Fri,6=Sat
+    const hoy = now.toISOString().slice(0,10); // YYYY-MM-DD
+    const mes = now.getMonth();
+    const anio = now.getFullYear();
+
+    // Find forms assigned to this member
+    const { data: forms } = await supabase.from('holding_formularios').select('*');
+    const assigned = (forms||[]).filter(f => (f.miembros_ids||[]).includes(miembro.id));
+
+    // Mon-Thu: check daily form. Fri: check semanal form. Sat-Sun: no notification.
+    if (dow === 0 || dow === 6) return res.json({ show: false });
+
+    const tipoEsperado = dow === 5 ? 'semanal' : 'daily';
+    const form = assigned.find(f => f.tipo === tipoEsperado);
+    if (!form) return res.json({ show: false });
+
+    // Check if already submitted
+    let submitted = false;
+    if (tipoEsperado === 'daily') {
+      const { data } = await supabase.from('holding_respuestas')
+        .select('id').eq('miembro_id', miembro.id).eq('fecha', hoy).single();
+      submitted = !!data;
+    } else {
+      const semana = Math.min(4, Math.ceil(now.getDate() / 7));
+      const { data } = await supabase.from('holding_respuestas')
+        .select('id').eq('miembro_id', miembro.id).eq('semana', semana).eq('mes', mes).eq('anio', anio).single();
+      submitted = !!data;
+    }
+
+    if (submitted) return res.json({ show: false });
+
+    res.json({
+      show: true,
+      tipo: tipoEsperado,
+      formulario_nombre: form.nombre,
+      link: `/formulario_equipo.html?miembro_id=${miembro.id}&tipo=${tipoEsperado}&fecha=${hoy}`,
+      miembro_nombre: miembro.nombre,
+    });
+  } catch (e) { res.json({ show: false }); }
 });
 
 // POST /holding/reporte-ia  — global report per client
