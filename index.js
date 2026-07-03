@@ -185,6 +185,7 @@ const { startScheduler: _startDiscordScheduler, triggerReminder: _triggerDiscord
 const { startGateway: _startDiscordGateway } = require('./discord.gateway');
 const { verifySignature: _calendlyVerify, extractInvitee: _calendlyExtract } = require('./calendly.service');
 const _calendlyOAuth = require('./calendly.oauth');
+const _metaOAuth     = require('./meta.oauth');
 
 const AI_BASE_SYSTEM = `Sos el coach de ventas más exigente y preciso del mercado hispanohablante. Analizás llamadas de alto ticket con estándares quirúrgicos. Tu trabajo no es motivar — es diagnosticar con precisión clínica, señalar exactamente qué falló y dar alternativas concretas de ejecución.
 
@@ -7187,6 +7188,355 @@ app.delete('/holding/delete-cliente', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// 📸 META / INSTAGRAM BUSINESS OAUTH
+// ═══════════════════════════════════════════════════════════════════
+
+// In-memory store for pending OAuth sessions (nonce → data, TTL 10 min)
+const _metaPending = new Map();
+function _metaStorePending(nonce, data) {
+  _metaPending.set(nonce, { ...data, expires: Date.now() + 10 * 60 * 1000 });
+}
+function _metaGetPending(nonce) {
+  const entry = _metaPending.get(nonce);
+  if (!entry) return null;
+  if (Date.now() > entry.expires) { _metaPending.delete(nonce); return null; }
+  return entry;
+}
+
+// Helper: auto-refresh token before Graph API calls
+async function _getMetaToken(negocio_id) {
+  const { data: conn } = await supabase
+    .from('meta_connections')
+    .select('*')
+    .eq('negocio_id', negocio_id)
+    .maybeSingle();
+  if (!conn) return null;
+
+  try {
+    const result = await _metaOAuth.ensureFreshToken(conn);
+    if (result.updated) {
+      await supabase.from('meta_connections').update({
+        long_lived_token: result.token,
+        token_expires_at: result.newExpires,
+        updated_at:       new Date().toISOString(),
+      }).eq('negocio_id', negocio_id);
+      console.log(`[Meta OAuth] Token refreshed for negocio=${negocio_id}`);
+    }
+    return { ...conn, long_lived_token: result.token };
+  } catch (err) {
+    console.error(`[Meta OAuth] Token refresh failed negocio=${negocio_id}:`, err.message);
+    return conn;
+  }
+}
+
+// Helper: popup HTML (success closes with postMessage; error shows message)
+function _metaPopupPage(success, cliente_id, errorMsg) {
+  const msg = success
+    ? `{type:'meta_connected',cliente_id:${JSON.stringify(cliente_id)}}`
+    : `{type:'meta_error',error:${JSON.stringify(errorMsg || 'Error desconocido')}}`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>body{font-family:sans-serif;background:#0d0e12;color:#9ba0b4;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}</style>
+</head><body>
+<div style="text-align:center">
+  <div style="font-size:32px;margin-bottom:12px">${success ? '✅' : '❌'}</div>
+  <div style="font-size:14px">${success ? 'Instagram conectado. Cerrando...' : 'Error: ' + (errorMsg || '')}</div>
+</div>
+<script>
+  try { window.opener && window.opener.postMessage(${msg}, '*'); } catch(e) {}
+  setTimeout(() => window.close(), 1800);
+</script>
+</body></html>`;
+}
+
+// Helper: page selector HTML shown inside the popup after OAuth
+function _metaPageSelectorHTML(nonce, pages) {
+  const hasAny = pages.some(p => p.ig_account_id);
+
+  const cards = pages.map((p, i) => {
+    const hasIG   = !!p.ig_account_id;
+    const checked = hasIG && pages.filter(x => x.ig_account_id).length === 1 ? 'checked' : '';
+    return `
+    <label class="card ${hasIG ? '' : 'disabled'}">
+      <input type="radio" name="page_id" value="${p.page_id}" ${checked} ${hasIG ? '' : 'disabled'}>
+      <span class="inner">
+        <span class="page-name">${p.page_name}</span>
+        ${hasIG
+          ? `<span class="ig-tag">@${p.ig_username}</span>`
+          : `<span class="no-ig">Sin cuenta de Instagram Business</span>`}
+      </span>
+    </label>`;
+  }).join('');
+
+  const noIGMsg = !hasAny
+    ? `<div class="warn">Tu cuenta de Facebook no tiene ninguna Página con una cuenta de Instagram Business asociada. Vinculá la cuenta en el Business Suite de Meta y volvé a intentarlo.</div>`
+    : '';
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Inter,system-ui,sans-serif;background:#0d0e12;color:#d1d5e0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+  .wrap{width:100%;max-width:440px}
+  h2{font-size:16px;font-weight:700;color:#fff;margin-bottom:6px}
+  .sub{font-size:13px;color:#6b7280;margin-bottom:20px}
+  .card{display:flex;align-items:center;gap:12px;border:1px solid #2a2d3a;border-radius:10px;padding:14px 16px;margin-bottom:10px;cursor:pointer;transition:border-color .15s,background .15s}
+  .card:not(.disabled):hover{border-color:#e0b54a;background:#1a1b22}
+  .card input{accent-color:#e0b54a;width:16px;height:16px;flex-shrink:0}
+  .card.disabled{opacity:.45;cursor:not-allowed}
+  .inner{display:flex;flex-direction:column;gap:3px}
+  .page-name{font-size:14px;font-weight:600;color:#e5e7eb}
+  .ig-tag{font-size:12px;color:#e0b54a;font-weight:500}
+  .no-ig{font-size:12px;color:#6b7280}
+  .warn{background:#1f1c14;border:1px solid #4a3800;border-radius:10px;padding:14px 16px;font-size:13px;color:#d1a84a;line-height:1.5;margin-top:8px}
+  .btn{display:block;width:100%;margin-top:18px;padding:13px;background:#e0b54a;color:#0d0e12;font-weight:700;font-size:14px;border:none;border-radius:10px;cursor:pointer;transition:opacity .15s}
+  .btn:hover{opacity:.88}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .err{color:#f87171;font-size:12px;margin-top:10px;text-align:center;display:none}
+</style>
+</head><body>
+<div class="wrap">
+  <h2>Seleccioná la cuenta a conectar</h2>
+  <p class="sub">Elegí la Página de Facebook con la cuenta de Instagram Business que querés vincular al CRM.</p>
+  <form id="frm" method="POST" action="/meta/select-page">
+    <input type="hidden" name="nonce" value="${nonce}">
+    ${cards}
+    ${noIGMsg}
+    <p class="err" id="err">Seleccioná una página para continuar.</p>
+    ${hasAny ? `<button class="btn" type="submit">Conectar →</button>` : ''}
+  </form>
+</div>
+<script>
+  document.getElementById('frm')?.addEventListener('submit', function(e) {
+    const sel = this.querySelector('input[name=page_id]:checked');
+    if (!sel) { e.preventDefault(); document.getElementById('err').style.display='block'; }
+  });
+</script>
+</body></html>`;
+}
+
+// GET /meta/connect?cliente_id=X — open from frontend as a popup
+app.get('/meta/connect', (req, res) => {
+  const { cliente_id } = req.query;
+  if (!cliente_id) return res.status(400).send('Missing cliente_id');
+  if (!process.env.META_APP_ID) return res.status(503).send('META_APP_ID not configured');
+
+  const backendUrl  = (process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+  const redirectUri = `${backendUrl}/meta/callback`;
+  const nonce       = require('crypto').randomBytes(12).toString('hex');
+  const state       = Buffer.from(JSON.stringify({ cliente_id, nonce })).toString('base64url');
+
+  // Pre-store nonce so callback can validate state tamper-proofing
+  _metaStorePending(nonce, { cliente_id, phase: 'auth' });
+
+  console.log(`[Meta OAuth] Starting flow — negocio=${cliente_id}`);
+  try {
+    res.redirect(_metaOAuth.buildOAuthURL(redirectUri, state));
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+// GET /meta/callback — Meta redirects here after user authorizes
+app.get('/meta/callback', async (req, res) => {
+  const { code, state, error: oauthError } = req.query;
+
+  if (oauthError) {
+    console.warn('[Meta OAuth] User denied:', oauthError);
+    return res.send(_metaPopupPage(false, null, `Acceso denegado: ${oauthError}`));
+  }
+  if (!code || !state) return res.status(400).send('Missing code or state');
+
+  let cliente_id, nonce;
+  try {
+    const decoded = JSON.parse(Buffer.from(state, 'base64url').toString());
+    cliente_id    = decoded.cliente_id;
+    nonce         = decoded.nonce;
+    if (!cliente_id || !nonce) throw new Error('invalid fields');
+  } catch {
+    return res.status(400).send('Invalid state parameter');
+  }
+
+  // Validate nonce exists (prevents CSRF)
+  const pending = _metaGetPending(nonce);
+  if (!pending || pending.cliente_id !== cliente_id) {
+    return res.status(400).send('Invalid or expired OAuth session');
+  }
+
+  try {
+    const backendUrl  = (process.env.BACKEND_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+    const redirectUri = `${backendUrl}/meta/callback`;
+
+    // Exchange code → short-lived → long-lived token
+    console.log(`[Meta OAuth] Exchanging code — negocio=${cliente_id}`);
+    const shortData    = await _metaOAuth.exchangeCode(code, redirectUri);
+    const longData     = await _metaOAuth.getLongLivedToken(shortData.access_token);
+    const longToken    = longData.access_token;
+    const expiresAt    = new Date(Date.now() + (longData.expires_in || 5184000) * 1000).toISOString();
+
+    // Fetch FB user + pages with IG accounts
+    const fbUser = await _metaOAuth.getFBUser(longToken);
+    const pages  = await _metaOAuth.getPagesWithIG(longToken);
+    console.log(`[Meta OAuth] FB user=${fbUser.name} pages=${pages.length} negocio=${cliente_id}`);
+
+    // Store tokens + pages in pending map, keyed by a new selection nonce
+    const selNonce = require('crypto').randomBytes(12).toString('hex');
+    _metaStorePending(selNonce, {
+      cliente_id,
+      fb_user_id:   fbUser.id,
+      fb_user_name: fbUser.name,
+      long_lived_token: longToken,
+      token_expires_at: expiresAt,
+    });
+
+    // Render page selector in the popup
+    res.send(_metaPageSelectorHTML(selNonce, pages));
+
+  } catch (err) {
+    console.error('[Meta OAuth] Callback error:', err.message);
+    res.send(_metaPopupPage(false, cliente_id, err.message));
+  }
+});
+
+// POST /meta/select-page — user picks their Facebook Page from the selector
+app.post('/meta/select-page', express.urlencoded({ extended: false }), async (req, res) => {
+  const { nonce, page_id } = req.body;
+
+  if (!nonce || !page_id) return res.status(400).send('Missing nonce or page_id');
+
+  const pending = _metaGetPending(nonce);
+  if (!pending || !pending.long_lived_token) {
+    return res.send(_metaPopupPage(false, null, 'La sesión expiró. Volvé a conectar desde el CRM.'));
+  }
+  _metaPending.delete(nonce);
+
+  const { cliente_id, fb_user_id, fb_user_name, long_lived_token, token_expires_at } = pending;
+
+  try {
+    // Fetch page details (name + page access token + IG account) for the selected page
+    const pages = await _metaOAuth.getPagesWithIG(long_lived_token);
+    const page  = pages.find(p => p.page_id === page_id);
+
+    if (!page) {
+      return res.send(_metaPopupPage(false, cliente_id, 'Página no encontrada. Intentalo de nuevo.'));
+    }
+    if (!page.ig_account_id) {
+      return res.send(_metaPopupPage(false, cliente_id, 'La página seleccionada no tiene una cuenta de Instagram Business vinculada.'));
+    }
+
+    console.log(`[Meta OAuth] Page selected: "${page.page_name}" → @${page.ig_username} — negocio=${cliente_id}`);
+
+    // Upsert connection
+    const connRow = {
+      negocio_id:           cliente_id,
+      fb_user_id,
+      fb_user_name,
+      fb_page_id:           page.page_id,
+      fb_page_name:         page.page_name,
+      fb_page_access_token: page.page_access_token,
+      ig_account_id:        page.ig_account_id,
+      ig_username:          page.ig_username,
+      long_lived_token,
+      token_expires_at,
+      scopes:               _metaOAuth.SCOPES,
+      connected_at:         new Date().toISOString(),
+      updated_at:           new Date().toISOString(),
+    };
+
+    const { error: upsertErr } = await supabase
+      .from('meta_connections')
+      .upsert(connRow, { onConflict: 'negocio_id' });
+
+    if (upsertErr) throw new Error(`DB upsert failed: ${upsertErr.message}`);
+
+    console.log(`[Meta OAuth] ✓ Connected negocio=${cliente_id} ig=@${page.ig_username}`);
+    res.send(_metaPopupPage(true, cliente_id, null));
+
+  } catch (err) {
+    console.error('[Meta OAuth] select-page error:', err.message);
+    res.send(_metaPopupPage(false, cliente_id, err.message));
+  }
+});
+
+// GET /meta/connection-status — current connection for the authenticated negocio
+app.get('/meta/connection-status', validateAccess, async (req, res) => {
+  const { data, error } = await supabase
+    .from('meta_connections')
+    .select('negocio_id,fb_page_name,ig_username,ig_account_id,connected_at,token_expires_at')
+    .eq('negocio_id', req.cliente_id)
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || null);
+});
+
+// DELETE /meta/disconnect — remove Meta connection for the current negocio
+app.delete('/meta/disconnect', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('meta_connections')
+      .delete()
+      .eq('negocio_id', req.cliente_id);
+    if (error) throw new Error(error.message);
+    console.log(`[Meta OAuth] Disconnected negocio=${req.cliente_id}`);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /meta/instagram/insights — fetch metrics from Graph API
+// Query params: metric (comma-separated), period (day|week|month), since, until (Unix timestamps)
+app.get('/meta/instagram/insights', validateAccess, async (req, res) => {
+  try {
+    const conn = await _getMetaToken(req.cliente_id);
+    if (!conn) return res.status(404).json({ error: 'No Meta connection for this negocio' });
+
+    const { metric = 'impressions,reach,follower_count', period = 'day', since, until } = req.query;
+
+    const params = { metric, period };
+    if (since) params.since = since;
+    if (until) params.until = until;
+
+    const data = await _metaOAuth.graphGet(
+      `/${conn.ig_account_id}/insights`,
+      conn.fb_page_access_token,
+      params
+    );
+
+    res.json(data);
+  } catch (err) {
+    console.error('[Meta Insights]', err.message);
+    const status = err.message.includes('[190]') ? 401 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
+// GET /meta/instagram/media — list posts, reels, stories for the IG account
+// Query params: fields, limit
+app.get('/meta/instagram/media', validateAccess, async (req, res) => {
+  try {
+    const conn = await _getMetaToken(req.cliente_id);
+    if (!conn) return res.status(404).json({ error: 'No Meta connection for this negocio' });
+
+    const {
+      fields = 'id,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
+      limit  = '20',
+    } = req.query;
+
+    const data = await _metaOAuth.graphGet(
+      `/${conn.ig_account_id}/media`,
+      conn.fb_page_access_token,
+      { fields, limit }
+    );
+
+    res.json(data);
+  } catch (err) {
+    console.error('[Meta Media]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
