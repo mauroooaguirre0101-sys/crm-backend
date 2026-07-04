@@ -7545,7 +7545,7 @@ app.get('/meta/instagram/media', validateAccess, async (req, res) => {
 app.get('/reports', validateAccess, async (req, res) => {
   try {
     const { data, error } = await supabase.from('call_reports')
-      .select('id, filename, analysis, note, call_id, created_at')
+      .select('id, filename, note, call_id, created_at')
       .eq('cliente_id', req.cliente_id)
       .order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
@@ -7555,57 +7555,14 @@ app.get('/reports', validateAccess, async (req, res) => {
 
 app.post('/reports', validateAccess, async (req, res) => {
   try {
-    if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada en el servidor' });
     const { filename, pdfBase64, note } = req.body;
     if (!pdfBase64) return res.status(400).json({ error: 'PDF requerido' });
-
-    const msg = await _anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'document',
-            source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 }
-          },
-          {
-            type: 'text',
-            text: `Analizá este reporte de llamadas de ventas y proporcioná un análisis completo en español con el siguiente formato:
-
-## Resumen ejecutivo
-(2-3 párrafos con los puntos más importantes)
-
-## Métricas clave
-(tasas de conversión, volumen, tendencias detectadas, etc.)
-
-## Fortalezas detectadas
-(lista de lo que está funcionando bien)
-
-## Áreas de mejora
-(lista de problemas o oportunidades identificadas)
-
-## Recomendaciones accionables
-(lista priorizada de acciones concretas)
-
-## Conclusión
-(párrafo final de cierre)
-
-${note ? `\nContexto adicional proporcionado: ${note}` : ''}
-
-Respondé siempre en español con formato markdown claro y preciso.`
-          }
-        ]
-      }]
-    });
-
-    const analysis = msg.content[0]?.text || '';
     const { data, error } = await supabase.from('call_reports').insert([{
       cliente_id: req.cliente_id,
       filename: filename || 'Reporte.pdf',
-      analysis,
       note: note || null,
-    }]).select().single();
+      pdf_base64: pdfBase64,
+    }]).select('id, filename, note, call_id, created_at').single();
     if (error) return res.status(500).json({ error: error.message });
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -7634,43 +7591,72 @@ app.delete('/reports/:id', validateAccess, async (req, res) => {
 app.post('/reports/conclusions', validateAccess, async (req, res) => {
   try {
     if (!_anthropic) return res.status(503).json({ error: 'ANTHROPIC_API_KEY no configurada' });
-    const { data, error } = await supabase.from('call_reports')
-      .select('filename, analysis, created_at')
+    const { name } = req.body;
+    if (!name || !name.trim()) return res.status(400).json({ error: 'Nombre del reporte requerido' });
+
+    const { data: reports, error: rErr } = await supabase.from('call_reports')
+      .select('id, filename, pdf_base64')
+      .eq('cliente_id', req.cliente_id)
+      .not('pdf_base64', 'is', null)
+      .order('created_at', { ascending: false });
+    if (rErr) return res.status(500).json({ error: rErr.message });
+    if (!reports || reports.length === 0) return res.status(400).json({ error: 'No hay reportes cargados para analizar' });
+
+    const content = [];
+    for (const r of reports) {
+      content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: r.pdf_base64 }, title: r.filename });
+    }
+    content.push({
+      type: 'text',
+      text: `Analizá estos ${reports.length} reportes de llamadas de ventas en conjunto e identificá lo siguiente (respondé en español con formato markdown):
+
+## Patrones en común
+Comportamientos, objeciones y situaciones que se repiten en múltiples reportes. Sé específico.
+
+## Problemas detectados
+Puntos débiles del equipo, objeciones no bien manejadas, errores frecuentes o sistemáticos.
+
+## Información para marketing
+Insights sobre el perfil del cliente ideal: dolores, motivaciones de compra, lenguaje que usan, objeciones recurrentes que pueden usarse para crear contenido.
+
+## Recomendaciones accionables
+Las 3–5 acciones concretas más importantes basadas en todos los reportes analizados.`
+    });
+
+    const msg = await _anthropic.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 4096, messages: [{ role: 'user', content }] });
+    const analysis = msg.content[0]?.text || '';
+    const reportIds = reports.map(r => r.id);
+    const reportNames = reports.map(r => r.filename);
+
+    const { data: saved, error: sErr } = await supabase.from('call_conclusions').insert([{
+      cliente_id: req.cliente_id,
+      name: name.trim(),
+      analysis,
+      report_ids: reportIds,
+      report_names: reportNames,
+    }]).select().single();
+    if (sErr) return res.status(500).json({ error: sErr.message });
+    res.json(saved);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/reports/conclusions', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('call_conclusions')
+      .select('id, name, analysis, report_ids, report_names, created_at')
       .eq('cliente_id', req.cliente_id)
       .order('created_at', { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
-    if (!data || data.length === 0) return res.status(400).json({ error: 'No hay reportes cargados para analizar' });
-    const combined = data.map((r, i) => `--- REPORTE ${i+1}: ${r.filename} ---\n${r.analysis}`).join('\n\n');
-    const msg = await _anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: `Tenés ${data.length} análisis individuales de reportes de llamadas de ventas. Sintetizalos y generá conclusiones generales del equipo/proceso.
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
-${combined}
-
-Generá un análisis consolidado con el siguiente formato en español:
-
-## Conclusión general
-(Resumen ejecutivo de los ${data.length} reportes)
-
-## Patrones identificados
-(Tendencias repetidas entre los reportes)
-
-## Principales fortalezas del equipo
-(Lo que consistentemente está funcionando bien)
-
-## Principales áreas de mejora
-(Problemas comunes o sistémicos detectados)
-
-## Plan de acción priorizado
-(Las 3-5 acciones más importantes a tomar basadas en todos los reportes)
-
-Respondé siempre en español con formato markdown claro.`
-      }]
-    });
-    res.json({ conclusions: msg.content[0]?.text || '' });
+app.delete('/reports/conclusions/:id', validateAccess, async (req, res) => {
+  try {
+    const { error } = await supabase.from('call_conclusions').delete()
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
