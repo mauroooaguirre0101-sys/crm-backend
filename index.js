@@ -7568,6 +7568,17 @@ app.post('/reports', validateAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.get('/reports/:id', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('call_reports')
+      .select('id, filename, note, call_id, created_at, pdf_base64')
+      .eq('id', req.params.id).eq('cliente_id', req.cliente_id)
+      .single();
+    if (error) return res.status(404).json({ error: 'No encontrado' });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.patch('/reports/:id', validateAccess, async (req, res) => {
   try {
     const { call_id } = req.body;
