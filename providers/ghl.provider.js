@@ -62,12 +62,13 @@ function buildOAuthURL(redirectUri, state) {
     response_type: 'code',
     redirect_uri:  redirectUri,
     client_id:     process.env.GHL_CLIENT_ID || '',
-    // Scopes GHL v2 requires for contacts, calendars and locations
+    // Scopes GHL v2 requires for contacts, calendars, locations and webhook management
     scope: [
       'contacts.readonly',
       'calendars.readonly',
       'calendars/appointments.readonly',
       'locations.readonly',
+      'webhooks.write',
     ].join(' '),
     state: typeof state === 'string' ? state : JSON.stringify(state),
   });
@@ -108,7 +109,7 @@ async function createWebhookSubscription(accessToken, locationId, callbackUrl) {
   const data = await _apiCall('POST', '/webhooks', {
     name:       'CRM Appointments Sync',
     url:        callbackUrl,
-    events:     ['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentRescheduled'],
+    events:     ['ContactCreate', 'AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentRescheduled'],
     locationId,
   }, accessToken);
   return data;

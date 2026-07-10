@@ -5750,7 +5750,8 @@ app.delete('/calendly/mappings/:id', async (req, res) => {
 // 🏢  GHL INTEGRATION (GoHighLevel per-negocio)
 // ══════════════════════════════════════════════════════
 
-const _ghlProvider = require('./providers/ghl.provider');
+const _ghlProvider  = require('./providers/ghl.provider');
+const _attribution  = require('./attribution');
 
 // Determine which calendar provider a negocio uses.
 // Set env var GHL_NEGOCIO_IDS="cliente_2,cliente_5" to add more.
@@ -5807,29 +5808,142 @@ async function _getGhlToken(negocio_id) {
 }
 
 // Auto-update matching lead to 'Agendado' — same logic as Calendly version
-async function _ghlUpdateLeadAgendado(instagram, name, cliente_id) {
-  const FINAL = ['Cerrado', 'Seña', 'Perdido', 'Perdido Post Call', 'No Show'];
-  let lead = null; let matchedBy = '';
+// Extrae los campos de contacto normalizados desde el objeto contact + payload raw.
+// Centraliza la lógica de resolución de nombre/instagram/email/teléfono
+// para que tanto _ghlUpsertCall como _ghlUpsertLead usen la misma fuente.
+function _extractContactFields(contact, rawPayload = {}) {
+  const instagram = _ghlProvider.extractInstagram(contact, rawPayload) || '';
 
-  if (instagram) {
-    const { data } = await supabase.from('leads').select('id, estado')
-      .eq('cliente_id', cliente_id).ilike('instagram', instagram).limit(1).maybeSingle();
-    if (data) { lead = data; matchedBy = 'instagram'; }
-  }
-  if (!lead && name && name !== 'Sin nombre') {
-    const { data } = await supabase.from('leads').select('id, estado')
-      .eq('cliente_id', cliente_id).ilike('nombre', name)
-      .order('updated_at', { ascending: false }).limit(1).maybeSingle();
-    if (data) { lead = data; matchedBy = 'nombre'; }
-  }
-  if (!lead) { console.log(`[GHL] No lead match for Agendado — ig="${instagram}" name="${name}"`); return; }
-  if (FINAL.includes(lead.estado)) { console.log(`[GHL] Lead id=${lead.id} already "${lead.estado}" — skipping`); return; }
+  const _rawLastName = contact.lastName || contact.last_name || rawPayload.last_name || '';
+  const _lastNameIsInstagram = !!(instagram && _rawLastName &&
+    _rawLastName.replace(/^@/, '').replace(/\s+/g, '').toLowerCase() === instagram);
+  const _lastNameIsPhrase = _rawLastName.trim().split(/\s+/).length > 3;
+  const nombre = [
+    contact.firstName || contact.first_name || rawPayload.first_name || '',
+    (_lastNameIsInstagram || _lastNameIsPhrase) ? '' : _rawLastName,
+  ].filter(Boolean).join(' ').trim()
+    || contact.full_name || rawPayload.full_name
+    || contact.email     || 'Sin nombre';
 
-  const { error } = await supabase.from('leads')
-    .update({ estado: 'Agendado', updated_at: new Date().toISOString() })
-    .eq('id', lead.id).eq('cliente_id', cliente_id);
-  if (error) console.warn(`[GHL] Lead Agendado update failed: ${error.message}`);
-  else console.log(`[GHL] ✓ Lead id=${lead.id} → Agendado (matched by ${matchedBy})`);
+  const email    = contact.email || rawPayload.email || '';
+  const telefono = contact.phone || contact.phone_raw || contact.full_phone_number
+    || rawPayload.phone || rawPayload.phone_raw || '';
+
+  return { nombre, instagram, email, telefono };
+}
+
+// Deriva el tipo de lead ('Ads' | 'Organico') desde el first_touch de atribución.
+function _inferLeadTipo(firstTouch) {
+  if (!firstTouch) return 'Organico';
+  return ['paid_social', 'paid_search', 'paid_video'].includes(firstTouch.medium)
+    ? 'Ads' : 'Organico';
+}
+
+// Crea o actualiza un lead en la tabla leads con atribución.
+// Fuente de verdad de la atribución: attr_first_touch es INMUTABLE una vez establecido.
+// attr_last_touch puede actualizarse en cada interacción.
+// source: 'manual' | 'automation' | 'appointment' | 'import' | 'api'
+// updateEstado: si se provee, actualiza el estado del lead (solo si no está en estado final).
+// Nunca lanza — devuelve { leadId, attr_first_touch, attr_last_touch } o nulls si falla.
+async function _ghlUpsertLead(contact, rawPayload = {}, cliente_id, source = 'automation', updateEstado = null) {
+  const FINAL_ESTADOS = ['Cerrado', 'Seña', 'Perdido', 'Perdido Post Call', 'No Show'];
+
+  try {
+    const { nombre, instagram, email, telefono } = _extractContactFields(contact, rawPayload);
+    const attrFields = _resolveGhlAttribution(contact, rawPayload);
+
+    // ── Buscar lead existente (instagram → email) ────────────────────────────
+    let lead = null;
+    if (instagram) {
+      const { data } = await supabase.from('leads')
+        .select('id, estado, attr_first_touch, attr_last_touch')
+        .eq('cliente_id', cliente_id).ilike('instagram', instagram).limit(1).maybeSingle();
+      if (data) lead = data;
+    }
+    if (!lead && email) {
+      const { data } = await supabase.from('leads')
+        .select('id, estado, attr_first_touch, attr_last_touch')
+        .eq('cliente_id', cliente_id).eq('email', email).limit(1).maybeSingle();
+      if (data) lead = data;
+    }
+
+    if (lead) {
+      // ── Lead existente: actualizar atribución + estado ─────────────────────
+      const patch = {};
+
+      // last_touch: siempre actualizable
+      if (attrFields.attr_last_touch) patch.attr_last_touch = attrFields.attr_last_touch;
+
+      // first_touch: solo transición NULL → valor (el trigger de DB lo refuerza también)
+      if (!lead.attr_first_touch && attrFields.attr_first_touch)
+        patch.attr_first_touch = attrFields.attr_first_touch;
+
+      // estado: solo si fue pedido y el lead no está en estado final
+      if (updateEstado && !FINAL_ESTADOS.includes(lead.estado))
+        patch.estado = updateEstado;
+
+      if (Object.keys(patch).length > 0) {
+        patch.updated_at = new Date().toISOString();
+        const { error } = await supabase.from('leads')
+          .update(patch).eq('id', lead.id).eq('cliente_id', cliente_id);
+        if (error) console.warn(`[GHL UpsertLead] Update failed id=${lead.id}: ${error.message}`);
+        else console.log(`[GHL UpsertLead] ✓ Updated lead id=${lead.id} fields=${Object.keys(patch).join(',')}`);
+      } else {
+        console.log(`[GHL UpsertLead] Lead id=${lead.id} — no changes needed`);
+      }
+
+      return {
+        leadId:           lead.id,
+        attr_first_touch: lead.attr_first_touch || attrFields.attr_first_touch || null,
+        attr_last_touch:  attrFields.attr_last_touch  || lead.attr_last_touch  || null,
+      };
+    }
+
+    // ── Lead nuevo: crear con atribución ────────────────────────────────────
+    const now = new Date().toISOString();
+    const fullRow = {
+      cliente_id,
+      nombre,
+      instagram,
+      email,
+      origen:               'Inbound',
+      tipo:                 _inferLeadTipo(attrFields.attr_first_touch),
+      estado:               updateEstado || 'Primer contacto',
+      source,
+      lead_creation_source: source,
+      seguimientos:         0,
+      created_at:           now,
+      updated_at:           now,
+      ...(attrFields.attr_first_touch && { attr_first_touch: attrFields.attr_first_touch }),
+      ...(attrFields.attr_last_touch  && { attr_last_touch:  attrFields.attr_last_touch  }),
+    };
+
+    let { data, error } = await supabase.from('leads').insert(fullRow)
+      .select('id, attr_first_touch, attr_last_touch').single();
+
+    if (error) {
+      console.warn(`[GHL UpsertLead] Full INSERT failed: ${error.message} — retrying core fields`);
+      const coreRow = {
+        cliente_id, nombre, instagram, email, origen: 'Inbound',
+        tipo: _inferLeadTipo(attrFields.attr_first_touch),
+        estado: updateEstado || 'Primer contacto',
+        source, seguimientos: 0, created_at: now, updated_at: now,
+      };
+      ({ data, error } = await supabase.from('leads').insert(coreRow)
+        .select('id, attr_first_touch, attr_last_touch').single());
+      if (error) {
+        console.warn(`[GHL UpsertLead] Core INSERT also failed: ${error.message}`);
+        return { leadId: null, attr_first_touch: attrFields.attr_first_touch || null, attr_last_touch: attrFields.attr_last_touch || null };
+      }
+    }
+
+    console.log(`[GHL UpsertLead] ✓ Created lead id=${data.id} source=${source} tipo=${fullRow.tipo} estado=${fullRow.estado}`);
+    return { leadId: data.id, attr_first_touch: data.attr_first_touch, attr_last_touch: data.attr_last_touch };
+
+  } catch (e) {
+    console.warn(`[GHL UpsertLead] Non-blocking error: ${e.message}`);
+    return { leadId: null, attr_first_touch: null, attr_last_touch: null };
+  }
 }
 
 // GHL sends appointment times in the calendar's local timezone WITHOUT an offset suffix.
@@ -5841,6 +5955,42 @@ function _normalizeGhlStartTime(raw) {
   if (s.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s)) return s;
   if (/^\d{10,13}$/.test(s)) return new Date(s.length === 13 ? +s : +s * 1000).toISOString();
   return s + '-03:00';
+}
+
+// Extrae firstAttributionSource y lastAttributionSource del contact de GHL
+// (pueden estar en distintos paths según si viene del API o del webhook payload)
+// y devuelve los dos AttributionRecords listos para insertar en JSONB.
+// Nunca lanza — si algo falla devuelve {} para no bloquear la creación de la call.
+function _resolveGhlAttribution(contact, rawPayload = {}) {
+  try {
+    const first = contact?.firstAttributionSource
+      || contact?.attributionSource
+      || rawPayload?.firstAttributionSource
+      || null;
+    const last  = contact?.lastAttributionSource
+      || rawPayload?.lastAttributionSource
+      || null;
+
+    if (!first && !last) {
+      console.log('[Attribution] No attributionSource found in contact or payload — skipping');
+      return {};
+    }
+
+    const { firstTouch, lastTouch } = _attribution.resolveAttribution({
+      ghlFirst: first ? _attribution.adaptFirstFromGhl(first) : null,
+      ghlLast:  last  ? _attribution.adaptLastFromGhl(last)   : null,
+    });
+
+    console.log(`[Attribution] first-touch platform=${firstTouch?.platform} confidence=${firstTouch?.confidence} resolved_by=${firstTouch?.resolved_by}`);
+
+    return {
+      attr_first_touch: firstTouch  || null,
+      attr_last_touch:  lastTouch   || null,
+    };
+  } catch (e) {
+    console.warn('[Attribution] Resolution failed (non-blocking):', e.message);
+    return {};
+  }
 }
 
 // Create or update a call in the `calls` table from a GHL appointment + contact
@@ -5921,12 +6071,18 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   // Try to find existing call by provider_event_id
   if (apptId) {
     const { data: existing, error: lookupErr } = await supabase.from('calls')
-      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion, closer, calendar_id')
+      .select('id, estado, fecha_llamada, instagram, nombre, whatsapp, email, preguntas_calificacion, closer, calendar_id, attr_first_touch')
       .eq('cliente_id', cliente_id).eq('provider_event_id', apptId).maybeSingle();
     if (lookupErr) console.warn(`[GHL UpsertCall] Lookup error: ${lookupErr.message}`);
 
     if (existing) {
       console.log(`[GHL UpsertCall] Found existing call id=${existing.id} — updating (event=${eventType})`);
+      // Actualizar lead (atribución) y heredar los valores resueltos a la call.
+      // leads es la fuente de verdad: _ghlUpsertLead actualiza last_touch en el lead,
+      // devuelve ambos touches para que la call herede sin resolver independientemente.
+      const { attr_first_touch: leadFirstTouch, attr_last_touch: leadLastTouch } =
+        await _ghlUpsertLead(contact, rawPayload, cliente_id, 'appointment').catch(() => ({}));
+
       const updatePatch = {
         fecha_llamada: appt.startTime || null,
         estado:        isDelete ? 'Cancelada' : estado,
@@ -5942,6 +6098,10 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
         ...(calendarName                                && { calendar_name: calendarName }),
         ...(closer || existing.closer                   ? { closer: closer || existing.closer } : {}),
         ...(calendarId || existing.calendar_id          ? { calendar_id: calendarId || existing.calendar_id } : {}),
+        // Atribución heredada del lead:
+        ...(leadLastTouch  && { attr_last_touch: leadLastTouch }),
+        // Backfill first_touch si la call no lo tenía aún (retrocompat con calls históricas)
+        ...(leadFirstTouch && !existing.attr_first_touch && { attr_first_touch: leadFirstTouch }),
       };
       if (eventType === 'AppointmentRescheduled' && appt.startTime && appt.startTime !== existing.fecha_llamada) {
         updatePatch.reagendada = true;
@@ -6030,6 +6190,13 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     // length === 0 or null: fall through to normal INSERT
   }
 
+  // ── Upsert lead: crea o actualiza con atribución y marca Agendado ───────────
+  // La atribución se escribe en leads (fuente de verdad). La call hereda desde ahí.
+  // Si no existía lead previo, lo crea con lead_creation_source='appointment'.
+  const { attr_first_touch, attr_last_touch } = await _ghlUpsertLead(
+    contact, rawPayload, cliente_id, 'appointment', 'Agendado'
+  ).catch(() => ({ attr_first_touch: null, attr_last_touch: null }));
+
   // Count existing calls for this instagram to set numero_llamada
   let numero_llamada = 1;
   if (instagram) {
@@ -6056,6 +6223,9 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     preguntas_calificacion: preguntasCalificacion,
     closer:                 closer         || null,
     calendar_id:            calendarId     || null,
+    // Atribución heredada del lead (fuente de verdad)
+    ...(attr_first_touch && { attr_first_touch }),
+    ...(attr_last_touch  && { attr_last_touch  }),
   };
 
   console.log(`[GHL UpsertCall] Supabase INSERT calls: ${JSON.stringify(fullRow)}`);
@@ -6080,10 +6250,6 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   }
 
   console.log(`[GHL UpsertCall] ✓ INSERT OK — call id=${data.id} nombre="${nombre}" email=${email} fecha=${appt.startTime}`);
-
-  await _ghlUpdateLeadAgendado(instagram, nombre, cliente_id).catch(e => {
-    console.warn('[GHL] Lead Agendado update error:', e.message);
-  });
 
   return data.id;
 }
@@ -6205,7 +6371,7 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
 
     console.log(`[GHL Webhook] Processing eventType=${eventType}${inferred ? ' (inferred)' : ''} for cliente_id=${cliente_id}`);
 
-    if (!['AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentCancelled', 'AppointmentRescheduled'].includes(eventType)) {
+    if (!['ContactCreate', 'AppointmentCreate', 'AppointmentUpdate', 'AppointmentDelete', 'AppointmentCancelled', 'AppointmentRescheduled'].includes(eventType)) {
       console.log(`[GHL Webhook] Skipping unhandled event type: ${eventType}`);
       await _ghlSaveRawPayload({ cliente_id, call_id: null, eventType, inferred, rawBody, contact: null, calendar: null });
       return res.json({ ok: true, info: `Unhandled: ${eventType}` });
@@ -6300,6 +6466,21 @@ app.post(['/webhooks/ghl', '/api/ghl/webhook'], async (req, res) => {
         lastName:  contact.lastName  || rawBody.last_name  || '',
       };
       console.log(`[GHL Webhook] Contact enriched with top-level name fields: "${contact.firstName} ${contact.lastName}".trim()`);
+    }
+
+    // ── ContactCreate: upsert lead con atribución y terminar ─────────────────
+    // Para ContactCreate, el body IS el contacto (body.id = contactId).
+    // La atribución llega en rawBody.firstAttributionSource / lastAttributionSource.
+    // _resolveGhlAttribution ya cubre el fallback rawPayload.firstAttributionSource.
+    if (eventType === 'ContactCreate') {
+      if (!contact.id && rawBody.id) contact.id = rawBody.id;
+      console.log(`[GHL Webhook] → ContactCreate: upsertando lead contact.id=${contact.id || contactId || '?'}`);
+      await _ghlUpsertLead(contact, rawBody, cliente_id, 'automation').catch(e => {
+        console.warn('[GHL Webhook] ContactCreate _ghlUpsertLead error:', e.message);
+      });
+      await _ghlSaveRawPayload({ cliente_id, call_id: null, eventType, inferred, rawBody, contact, calendar: null });
+      _logGhlWebhook({ eventType, contactId: contact.id || contactId, cliente_id, status: 'lead_upserted' });
+      return res.json({ ok: true, info: 'ContactCreate processed' });
     }
 
     // ── Build appointment payload ─────────────────────────────────────────────
@@ -6430,10 +6611,13 @@ app.get('/oauth/callback', async (req, res) => {
         webhookId = wh?.id || wh?.webhookId || null;
         console.log(`[GHL OAuth] ✓ Webhook auto-created id=${webhookId} → ${webhookUrl}`);
       } catch (e) {
-        console.warn('[GHL OAuth] ⚠ Webhook auto-creation failed:', e.message);
-        console.warn(`[GHL OAuth] ▶ Set webhook MANUALLY in GHL → Sub-account → Settings → Integrations → Webhooks`);
-        console.warn(`[GHL OAuth] ▶ Webhook URL to paste: ${webhookUrl}`);
-        console.warn(`[GHL OAuth] ▶ Events to select: AppointmentCreate, AppointmentUpdate, AppointmentDelete`);
+        // Log at ERROR level so Railway surfaces this prominently — the connection saves
+        // but without a native webhook, closer/user won't arrive in appointment payloads.
+        // Most common cause: token obtained without 'webhooks.write' scope (reconnect to fix).
+        console.error('[GHL OAuth] ❌ Webhook auto-creation failed:', e.message);
+        console.error(`[GHL OAuth] ❌ cliente_id=${cliente_id} locationId=${locationId}`);
+        console.error(`[GHL OAuth] ❌ Fix: reconnect via GET /ghl/connect?cliente_id=${cliente_id} (new token will have webhooks.write scope)`);
+        console.error(`[GHL OAuth] ❌ Manual fallback: POST /ghl/register-native-webhook with body {"cliente_id":"${cliente_id}"} after reconnecting`);
       }
     }
 
