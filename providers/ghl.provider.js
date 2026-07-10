@@ -62,13 +62,12 @@ function buildOAuthURL(redirectUri, state) {
     response_type: 'code',
     redirect_uri:  redirectUri,
     client_id:     process.env.GHL_CLIENT_ID || '',
-    // Scopes GHL v2 requires for contacts, calendars, locations and webhook management
+    // Scopes GHL v2 requires for contacts, calendars and locations
     scope: [
       'contacts.readonly',
       'calendars.readonly',
       'calendars/appointments.readonly',
       'locations.readonly',
-      'webhooks.write',
     ].join(' '),
     state: typeof state === 'string' ? state : JSON.stringify(state),
   });
