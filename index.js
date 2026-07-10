@@ -6030,12 +6030,12 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
 
   const apptId = appt.appointmentId || appt.id || null;
 
-  // ── closer: body.user firstName+lastName → calendar_name fallback ────────────
+  // ── closer: native webhook → rawPayload.user; workflow webhook → flat fields ──
   const closer = [
-    rawPayload.user?.firstName || '',
-    rawPayload.user?.lastName  || '',
+    rawPayload.user?.firstName || rawPayload.userFirstName || '',
+    rawPayload.user?.lastName  || rawPayload.userLastName  || '',
   ].filter(Boolean).join(' ').trim() || '';
-  const closerEmail = rawPayload.user?.email || '';
+  const closerEmail = rawPayload.user?.email || rawPayload.userEmail || '';
   console.log(`[GHL Parser] resolved closer="${closer || '(none)'}" closerEmail="${closerEmail || '(none)'}"`);
 
   // ── calendar_id: nested body.calendar.id → top-level variants ────────────────
