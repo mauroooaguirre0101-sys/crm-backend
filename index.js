@@ -5753,6 +5753,35 @@ app.delete('/calendly/mappings/:id', async (req, res) => {
 const _ghlProvider  = require('./providers/ghl.provider');
 const _attribution  = require('./attribution');
 
+// In-memory cache: locationId → Map<userId, { firstName, lastName }>
+// Refreshes on server restart. Acceptable since team members rarely change.
+const _ghlUserCache = new Map();
+
+async function _resolveCloserFromAppt(accessToken, appointmentId, locationId) {
+  if (!accessToken || !appointmentId) return '';
+  try {
+    const appt = await _ghlProvider.getAppointment(accessToken, appointmentId);
+    const assignedUserId = appt?.assignedUserId || appt?.userId || appt?.users?.[0] || null;
+    if (!assignedUserId) return '';
+
+    if (!_ghlUserCache.has(locationId)) {
+      const users = await _ghlProvider.getLocationUsers(accessToken, locationId);
+      const map = new Map();
+      for (const u of (users || [])) {
+        if (u.id) map.set(u.id, { firstName: u.firstName || u.first_name || '', lastName: u.lastName || u.last_name || '' });
+      }
+      _ghlUserCache.set(locationId, map);
+    }
+
+    const user = _ghlUserCache.get(locationId)?.get(assignedUserId);
+    if (!user) return '';
+    return [user.firstName, user.lastName].filter(Boolean).join(' ').trim();
+  } catch (e) {
+    console.warn(`[GHL CloserEnrich] Failed: ${e.message}`);
+    return '';
+  }
+}
+
 // Determine which calendar provider a negocio uses.
 // Set env var GHL_NEGOCIO_IDS="cliente_2,cliente_5" to add more.
 function _getCalendarProvider(negocio_id) {
@@ -6030,12 +6059,23 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
 
   const apptId = appt.appointmentId || appt.id || null;
 
-  // ── closer: native webhook → rawPayload.user; workflow webhook → flat fields ──
-  const closer = [
+  // ── closer: native webhook → rawPayload.user; workflow → flat fields; fallback → API ──
+  let closer = [
     rawPayload.user?.firstName || rawPayload.userFirstName || '',
     rawPayload.user?.lastName  || rawPayload.userLastName  || '',
   ].filter(Boolean).join(' ').trim() || '';
   const closerEmail = rawPayload.user?.email || rawPayload.userEmail || '';
+
+  // If closer still empty, enrich via GHL API using the appointmentId
+  if (!closer && apptId) {
+    const conn       = await _getGhlToken(cliente_id);
+    const apiToken   = conn?.access_token || process.env.GHL_API_KEY || null;
+    const locationId = conn?.provider_location_id || process.env.GHL_LOCATION_ID || null;
+    if (apiToken && locationId) {
+      closer = await _resolveCloserFromAppt(apiToken, apptId, locationId);
+      if (closer) console.log(`[GHL Parser] closer enriched via API: "${closer}"`);
+    }
+  }
   console.log(`[GHL Parser] resolved closer="${closer || '(none)'}" closerEmail="${closerEmail || '(none)'}"`);
 
   // ── calendar_id: nested body.calendar.id → top-level variants ────────────────
