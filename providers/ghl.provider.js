@@ -66,7 +66,9 @@ function buildOAuthURL(redirectUri, state) {
     scope: [
       'contacts.readonly',
       'calendars.readonly',
+      'calendars/events.readonly',
       'locations.readonly',
+      'users.readonly',
     ].join(' '),
     state: typeof state === 'string' ? state : JSON.stringify(state),
   });
