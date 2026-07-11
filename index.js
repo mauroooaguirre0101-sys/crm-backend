@@ -6106,10 +6106,10 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
       .maybeSingle();
     if (calTpl?.questions?.length) {
       const allowedKeys = new Set(
-        calTpl.questions.filter(q => q.id !== '_completion').map(q => q.titulo)
+        calTpl.questions.filter(q => q.id !== '_completion').map(q => q.titulo.trim())
       );
       filteredQualAnswers = Object.fromEntries(
-        Object.entries(qualAnswers).filter(([k]) => allowedKeys.has(k))
+        Object.entries(qualAnswers).filter(([k]) => allowedKeys.has(k.trim()))
       );
       console.log(`[GHL Parser] qual filter applied: ${Object.keys(qualAnswers).length} → ${Object.keys(filteredQualAnswers).length} answers`);
     }
