@@ -6093,11 +6093,34 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
   const estado = estadoByEvent || _ghlProvider.mapAppointmentStatus(apptStatus);
 
   // Extract qualification answers early so they're available for both UPDATE and INSERT
-  const qualAnswers  = _ghlProvider.extractQualificationAnswers(rawPayload);
-  const answerCount  = Object.keys(qualAnswers).length;
+  const qualAnswers = _ghlProvider.extractQualificationAnswers(rawPayload);
+
+  // Filter to canonical questions if a ghl_calificacion template is configured for this client
+  let filteredQualAnswers = qualAnswers;
+  try {
+    const { data: calTpl } = await supabase
+      .from('form_templates')
+      .select('questions')
+      .eq('cliente_id', cliente_id)
+      .eq('tipo', 'ghl_calificacion')
+      .maybeSingle();
+    if (calTpl?.questions?.length) {
+      const allowedKeys = new Set(
+        calTpl.questions.filter(q => q.id !== '_completion').map(q => q.titulo)
+      );
+      filteredQualAnswers = Object.fromEntries(
+        Object.entries(qualAnswers).filter(([k]) => allowedKeys.has(k))
+      );
+      console.log(`[GHL Parser] qual filter applied: ${Object.keys(qualAnswers).length} → ${Object.keys(filteredQualAnswers).length} answers`);
+    }
+  } catch (e) {
+    console.warn(`[GHL Parser] qual filter lookup failed: ${e.message}`);
+  }
+
+  const answerCount  = Object.keys(filteredQualAnswers).length;
   console.log(`[GHL Parser] qualification answers extracted=${answerCount}`);
-  if (answerCount > 0) console.log(`[GHL Parser] qualification keys: ${Object.keys(qualAnswers).join(' | ')}`);
-  const preguntasCalificacion = answerCount > 0 ? JSON.stringify(qualAnswers) : null;
+  if (answerCount > 0) console.log(`[GHL Parser] qualification keys: ${Object.keys(filteredQualAnswers).join(' | ')}`);
+  const preguntasCalificacion = answerCount > 0 ? JSON.stringify(filteredQualAnswers) : null;
 
   console.log(`[GHL UpsertCall] nombre="${nombre}" email=${email} phone=${telefono} apptId=${apptId} estado=${estado} startTime=${appt.startTime || '—'}`);
 
