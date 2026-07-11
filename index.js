@@ -5762,6 +5762,7 @@ async function _resolveCloserFromAppt(accessToken, appointmentId, locationId) {
   try {
     const appt = await _ghlProvider.getAppointment(accessToken, appointmentId);
     const assignedUserId = appt?.assignedUserId || appt?.userId || appt?.users?.[0] || null;
+    console.log(`[GHL CloserEnrich] appt keys="${Object.keys(appt||{}).join(',')}" assignedUserId=${assignedUserId||'none'}`);
     if (!assignedUserId) return '';
 
     if (!_ghlUserCache.has(locationId)) {

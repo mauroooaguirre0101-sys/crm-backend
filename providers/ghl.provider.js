@@ -99,7 +99,13 @@ async function getContact(accessToken, contactId) {
 // Get an appointment by ID
 async function getAppointment(accessToken, appointmentId) {
   const data = await _apiCall('GET', `/calendars/events/appointments/${appointmentId}`, null, accessToken);
-  return data?.appointment || data;
+  return data?.appointment || data?.event || data;
+}
+
+// Get all users for a location (used to resolve assignedUserId → name)
+async function getLocationUsers(accessToken, locationId) {
+  const data = await _apiCall('GET', `/users/search?locationId=${encodeURIComponent(locationId)}&limit=100`, null, accessToken);
+  return data?.users || data || [];
 }
 
 // Create a webhook subscription for appointment events
@@ -432,6 +438,7 @@ module.exports = {
   getLocation,
   getContact,
   getAppointment,
+  getLocationUsers,
   listAppointments,
   createWebhookSubscription,
   deleteWebhookSubscription,
