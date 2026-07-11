@@ -5766,7 +5766,9 @@ async function _resolveCloserFromAppt(accessToken, appointmentId, locationId) {
     if (!assignedUserId) return '';
 
     if (!_ghlUserCache.has(locationId)) {
-      const users = await _ghlProvider.getLocationUsers(accessToken, locationId);
+      // Prefer GHL_API_KEY for users lookup — OAuth token may lack users.readonly scope
+      const usersToken = process.env.GHL_API_KEY || accessToken;
+      const users = await _ghlProvider.getLocationUsers(usersToken, locationId);
       const map = new Map();
       for (const u of (users || [])) {
         if (u.id) map.set(u.id, { firstName: u.firstName || u.first_name || '', lastName: u.lastName || u.last_name || '' });

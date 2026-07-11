@@ -68,7 +68,6 @@ function buildOAuthURL(redirectUri, state) {
       'calendars.readonly',
       'calendars/appointments.readonly',
       'locations.readonly',
-      'users.readonly',
     ].join(' '),
     state: typeof state === 'string' ? state : JSON.stringify(state),
   });
