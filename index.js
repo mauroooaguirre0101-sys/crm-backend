@@ -5757,28 +5757,18 @@ const _attribution  = require('./attribution');
 // Refreshes on server restart. Acceptable since team members rarely change.
 const _ghlUserCache = new Map();
 
-async function _resolveCloserFromAppt(accessToken, appointmentId, locationId) {
+async function _resolveCloserFromAppt(accessToken, appointmentId) {
   if (!appointmentId || !accessToken) return '';
   try {
-    // Use OAuth token for appointment (has calendars/events.readonly scope)
     const appt = await _ghlProvider.getAppointment(accessToken, appointmentId);
     const assignedUserId = appt?.assignedUserId || appt?.userId || appt?.users?.[0] || null;
-    console.log(`[GHL CloserEnrich] appt keys="${Object.keys(appt||{}).join(',')}" assignedUserId=${assignedUserId||'none'}`);
+    console.log(`[GHL CloserEnrich] assignedUserId=${assignedUserId||'none'}`);
     if (!assignedUserId) return '';
 
-    if (!_ghlUserCache.has(locationId)) {
-      // OAuth token has users.readonly scope and is scoped to this location
-      const users = await _ghlProvider.getLocationUsers(accessToken, locationId);
-      const map = new Map();
-      for (const u of (users || [])) {
-        if (u.id) map.set(u.id, { firstName: u.firstName || u.first_name || '', lastName: u.lastName || u.last_name || '' });
-      }
-      _ghlUserCache.set(locationId, map);
-    }
-
-    const user = _ghlUserCache.get(locationId)?.get(assignedUserId);
-    if (!user) return '';
-    return [user.firstName, user.lastName].filter(Boolean).join(' ').trim();
+    const user = await _ghlProvider.getUser(accessToken, assignedUserId);
+    const firstName = user?.firstName || user?.first_name || '';
+    const lastName  = user?.lastName  || user?.last_name  || '';
+    return [firstName, lastName].filter(Boolean).join(' ').trim();
   } catch (e) {
     console.warn(`[GHL CloserEnrich] Failed: ${e.message}`);
     return '';
@@ -6075,7 +6065,7 @@ async function _ghlUpsertCall(appt, contact, cliente_id, eventType, rawPayload =
     const apiToken   = conn?.access_token || process.env.GHL_API_KEY || null;
     const locationId = conn?.provider_location_id || process.env.GHL_LOCATION_ID || null;
     if (apiToken && locationId) {
-      closer = await _resolveCloserFromAppt(apiToken, apptId, locationId);
+      closer = await _resolveCloserFromAppt(apiToken, apptId);
       if (closer) console.log(`[GHL Parser] closer enriched via API: "${closer}"`);
     }
   }
