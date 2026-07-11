@@ -5758,12 +5758,10 @@ const _attribution  = require('./attribution');
 const _ghlUserCache = new Map();
 
 async function _resolveCloserFromAppt(accessToken, appointmentId, locationId) {
-  if (!appointmentId) return '';
-  // Always prefer GHL_API_KEY — OAuth token lacks calendars/appointments and users scopes
-  const apiKey = process.env.GHL_API_KEY || accessToken;
-  if (!apiKey) return '';
+  if (!appointmentId || !accessToken) return '';
   try {
-    const appt = await _ghlProvider.getAppointment(apiKey, appointmentId);
+    // Use OAuth token for appointment (has calendars/events.readonly scope)
+    const appt = await _ghlProvider.getAppointment(accessToken, appointmentId);
     const assignedUserId = appt?.assignedUserId || appt?.userId || appt?.users?.[0] || null;
     console.log(`[GHL CloserEnrich] appt keys="${Object.keys(appt||{}).join(',')}" assignedUserId=${assignedUserId||'none'}`);
     if (!assignedUserId) return '';
