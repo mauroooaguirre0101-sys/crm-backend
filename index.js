@@ -1547,9 +1547,15 @@ app.post('/client-aliases', async (req, res) => {
   try {
     const email = req.headers['x-user-email'];
     if (!email) return res.status(400).json({ error: 'Falta x-user-email' });
-    if (!(await holdingAccess(email))) return res.status(403).json({ error: 'Solo el super-admin puede cambiar los apodos de clientes' });
     const { cliente_id, alias } = req.body;
     if (!cliente_id) return res.status(400).json({ error: 'Falta cliente_id' });
+    // Super-admin can change any alias; regular admins can only change their own client's alias
+    const isSuperAdmin = await holdingAccess(email);
+    if (!isSuperAdmin) {
+      const { data: access } = await supabase.from('user_clientes')
+        .select('role').eq('user_email', email).eq('cliente_id', cliente_id).maybeSingle();
+      if (!access || access.role !== 'admin') return res.status(403).json({ error: 'Sin permiso para cambiar el apodo de este cliente' });
+    }
     if (!alias?.trim()) {
       await supabase.from('client_aliases').delete().eq('cliente_id', cliente_id);
     } else {
