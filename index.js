@@ -5687,6 +5687,109 @@ app.delete('/calendly/disconnect', validateAccess, async (req, res) => {
   }
 });
 
+// POST /calendly/import-past — import past Calendly events into calls
+// Body: { desde: "YYYY-MM-DD", hasta: "YYYY-MM-DD" }  OR  { dias: 30 }
+app.post('/calendly/import-past', validateAccess, async (req, res) => {
+  try {
+    const conn = await _getCalendlyToken(req.cliente_id);
+    if (!conn?.access_token) return res.status(400).json({ error: 'Calendly no conectado' });
+
+    // Resolve date range
+    let minStart, maxStart;
+    if (req.body.dias) {
+      const d = Math.max(1, Math.min(365, parseInt(req.body.dias) || 30));
+      minStart = new Date(Date.now() - d * 24 * 60 * 60 * 1000).toISOString();
+      maxStart = new Date().toISOString();
+    } else {
+      if (!req.body.desde || !req.body.hasta) return res.status(400).json({ error: 'Enviá desde/hasta o dias' });
+      minStart = new Date(req.body.desde).toISOString();
+      maxStart = new Date(req.body.hasta + 'T23:59:59').toISOString();
+    }
+    console.log(`[Calendly Import] cliente=${req.cliente_id} desde=${minStart} hasta=${maxStart}`);
+
+    // Get Calendly user URI
+    const me = await _calendlyOAuth.getCurrentUser(conn.access_token);
+    const userUri = me?.uri || me?.resource?.uri;
+    if (!userUri) return res.status(500).json({ error: 'No se pudo obtener usuario de Calendly' });
+
+    // Fetch all scheduled events in range (paginate)
+    let events = [];
+    let pageToken = null;
+    do {
+      const params = new URLSearchParams({
+        user:            userUri,
+        min_start_time:  minStart,
+        max_start_time:  maxStart,
+        status:          'active',
+        count:           '100',
+        sort:            'start_time:asc',
+      });
+      if (pageToken) params.set('page_token', pageToken);
+      const r = await fetch(`https://api.calendly.com/scheduled_events?${params}`, {
+        headers: { Authorization: `Bearer ${conn.access_token}`, 'Content-Type': 'application/json' },
+      });
+      const evData = await r.json();
+      if (!r.ok) throw new Error(`Calendly events [${r.status}]: ${JSON.stringify(evData).slice(0,200)}`);
+      events = events.concat(evData.collection || []);
+      pageToken = evData.pagination?.next_page_token || null;
+    } while (pageToken);
+
+    console.log(`[Calendly Import] Found ${events.length} events`);
+
+    let imported = 0, skipped = 0, errors = 0;
+
+    for (const event of events) {
+      const eventUuid = event.uri?.split('/').pop();
+      if (!eventUuid) continue;
+
+      // Fetch invitees for this event
+      let invitees = [];
+      try {
+        const ri = await fetch(`https://api.calendly.com/scheduled_events/${eventUuid}/invitees?count=100`, {
+          headers: { Authorization: `Bearer ${conn.access_token}`, 'Content-Type': 'application/json' },
+        });
+        const invData = await ri.json();
+        invitees = invData.collection || [];
+      } catch (e) {
+        console.warn(`[Calendly Import] Could not fetch invitees for event ${eventUuid}: ${e.message}`);
+        errors++;
+        continue;
+      }
+
+      for (const rawInvitee of invitees) {
+        // Build payload compatible with extractInvitee
+        const syntheticPayload = {
+          ...rawInvitee,
+          scheduled_event: event,
+          questions_and_answers: rawInvitee.questions_and_answers || [],
+        };
+        const inv = _calendlyExtract(syntheticPayload);
+
+        // Skip if already exists by invitee URI
+        if (inv.uri) {
+          const { data: exists } = await supabase.from('calls')
+            .select('id').eq('cliente_id', req.cliente_id).eq('calendly_invitee_uri', inv.uri).maybeSingle();
+          if (exists) { skipped++; continue; }
+        }
+
+        try {
+          await _calendlyCreateCall(inv, req.cliente_id);
+          imported++;
+        } catch (e) {
+          console.warn(`[Calendly Import] Error creating call for ${inv.email}: ${e.message}`);
+          errors++;
+        }
+      }
+    }
+
+    console.log(`[Calendly Import] Done — imported=${imported} skipped=${skipped} errors=${errors}`);
+    res.json({ ok: true, imported, skipped, errors, total_events: events.length });
+  } catch (err) {
+    console.error('[Calendly Import] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /calendly/debug  OR  GET /debug/calendly-last-events — full pipeline debug
 async function _calendlyDebugHandler(req, res) {
   const email = req.headers['x-user-email'];
