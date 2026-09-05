@@ -8020,6 +8020,88 @@ app.delete('/reports/conclusions/:id', validateAccess, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── DIAGNÓSTICO BARBERO (público) ────────────────────────────────────────────
+
+const DIAGNOSTICO_PROMPTS = {
+  dueno: `Sos un consultor experto en barberías. Analizá las respuestas de este dueño de barbería y detectá sus principales cuellos de botella de negocio.
+Respondé ÚNICAMENTE con el diagnóstico en segunda persona singular (tuteo), sin saludos ni introducción, empezando directamente con los cuellos de botella.
+Identificá exactamente 3 cuellos de botella. Para cada uno escribí:
+**[Nombre del cuello de botella]**
+Explicación de 2-3 oraciones específicas basada en sus respuestas, mencionando datos concretos que compartió.
+Usá lenguaje directo, honesto y sin suavizar los problemas. No uses frases motivacionales. El diagnóstico total no debe superar 300 palabras.`,
+
+  futuro: `Sos un consultor experto en apertura de barberías. Analizá las respuestas de este barbero que quiere abrir su primera barbería y detectá sus brechas de preparación.
+Respondé ÚNICAMENTE con el diagnóstico en segunda persona singular (tuteo), sin saludos ni introducción.
+Identificá exactamente 3 brechas o riesgos principales. Para cada uno escribí:
+**[Nombre del cuello de botella]**
+Explicación de 2-3 oraciones específicas basada en sus respuestas concretas, indicando qué consecuencia puede tener si no lo resuelve antes de abrir.
+Lenguaje directo y honesto. No más de 300 palabras en total.`,
+
+  segunda: `Sos un consultor experto en escalado de barberías. Analizá las respuestas de este dueño que quiere abrir su segunda barbería y determiná si realmente está listo para escalar, o si tiene problemas sin resolver en la primera.
+Respondé ÚNICAMENTE con el diagnóstico en segunda persona singular (tuteo), sin saludos ni introducción.
+Identificá exactamente 3 cuellos de botella o riesgos de escalado. Para cada uno escribí:
+**[Nombre del cuello de botella]**
+Explicación de 2-3 oraciones específicas basada en sus respuestas, indicando si representa un riesgo para abrir la segunda o un problema que primero hay que resolver.
+Lenguaje directo y honesto. No más de 300 palabras en total.`
+};
+
+const AVATAR_LABELS = {
+  dueno: 'Dueño de barbería',
+  futuro: 'Barbero que quiere abrir su primera barbería',
+  segunda: 'Dueño de barbería que quiere abrir una segunda'
+};
+
+app.post('/diagnostico/barbero', async (req, res) => {
+  try {
+    const { nombre, celular, instagram, comprometido, avatar, respuestas } = req.body || {};
+    if (!nombre || !avatar || !respuestas) {
+      return res.status(400).json({ error: 'Faltan campos requeridos: nombre, avatar, respuestas' });
+    }
+    if (!DIAGNOSTICO_PROMPTS[avatar]) {
+      return res.status(400).json({ error: 'Avatar inválido' });
+    }
+
+    // Build prompt with answers
+    const respuestasTexto = Object.entries(respuestas)
+      .map(([pregunta, respuesta]) => `- ${pregunta}: ${respuesta}`)
+      .join('\n');
+
+    const userMessage = `Avatar: ${AVATAR_LABELS[avatar]}\nRespuestas:\n${respuestasTexto}`;
+
+    // Call Claude API
+    let diagnostico = '';
+    if (_anthropic) {
+      const msg = await _anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 600,
+        system: DIAGNOSTICO_PROMPTS[avatar],
+        messages: [{ role: 'user', content: userMessage }]
+      });
+      diagnostico = msg.content?.[0]?.text || '';
+    } else {
+      diagnostico = 'Diagnóstico no disponible (API key no configurada).';
+    }
+
+    // Save to Supabase
+    const { error: dbErr } = await supabase.from('diagnosticos_barbero').insert({
+      nombre,
+      celular: celular || null,
+      instagram: instagram || null,
+      comprometido: comprometido ?? null,
+      avatar_tipo: avatar,
+      respuestas,
+      diagnostico,
+      created_at: new Date().toISOString()
+    });
+    if (dbErr) console.warn('[Diagnostico] Supabase insert error:', dbErr.message);
+
+    res.json({ diagnostico });
+  } catch (err) {
+    console.error('[Diagnostico] Error:', err.message);
+    res.status(500).json({ error: 'Error al generar el diagnóstico' });
+  }
+});
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
