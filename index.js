@@ -8051,6 +8051,22 @@ const AVATAR_LABELS = {
   segunda: 'Dueño de barbería que quiere abrir una segunda'
 };
 
+// Listar respuestas del diagnóstico (requiere auth + admin)
+app.get('/diagnostico/respuestas', validateAccess, async (req, res) => {
+  try {
+    const { data: uc } = await supabase.from('user_clientes')
+      .select('role').eq('user_email', req.userEmail).eq('cliente_id', req.cliente_id).maybeSingle();
+    const isSA = await holdingAccess(req.userEmail).catch(()=>false);
+    if (!isSA && uc?.role !== 'admin') return res.status(403).json({ error: 'Solo admins pueden ver las respuestas del diagnóstico' });
+    const { data, error } = await supabase.from('diagnosticos_barbero')
+      .select('*').order('created_at', { ascending: false }).limit(500);
+    if (error) throw error;
+    res.json({ respuestas: data });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/diagnostico/barbero', async (req, res) => {
   try {
     const { nombre, celular, instagram, comprometido, avatar, respuestas } = req.body || {};
