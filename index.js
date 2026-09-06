@@ -8066,6 +8066,19 @@ app.get('/diagnostico/respuestas', validateAccess, async (req, res) => {
   }
 });
 
+// Eliminar respuesta (requiere auth + admin)
+app.delete('/diagnostico/respuestas/:id', validateAccess, async (req, res) => {
+  try {
+    const isSA = await holdingAccess(req.user.user_email).catch(()=>false);
+    if (!isSA && req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    const { error } = await supabase.from('diagnosticos_barbero').delete().eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch(err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/diagnostico/barbero', async (req, res) => {
   try {
     const { nombre, celular, instagram, comprometido, avatar, respuestas } = req.body || {};
