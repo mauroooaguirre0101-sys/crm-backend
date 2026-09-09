@@ -8051,6 +8051,85 @@ const AVATAR_LABELS = {
   segunda: 'Dueño de barbería que quiere abrir una segunda'
 };
 
+// ─── VENTAS MANUALES (cliente_6) ──────────────────────────────────────────────
+
+const VENTAS_CONFIG = {
+  PIF:      { monto_total: 300, monto_cuota: 300, cuotas_total: 1 },
+  '2cuotas':{ monto_total: 300, monto_cuota: 150, cuotas_total: 2 },
+  '3cuotas':{ monto_total: 300, monto_cuota: 100, cuotas_total: 3 },
+};
+
+function _nextPayDate(fechaVenta, mesesOffset = 1) {
+  const d = new Date(fechaVenta);
+  d.setMonth(d.getMonth() + mesesOffset);
+  return d.toISOString().slice(0, 10);
+}
+
+app.get('/ventas', validateAccess, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('ventas_manuales')
+      .select('*').eq('cliente_id', req.cliente_id)
+      .order('fecha_venta', { ascending: false }).limit(500);
+    if (error) throw error;
+    res.json({ ventas: data });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/ventas', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    const { nombre, instagram, celular, tipo_pago, medio_pago, fecha_venta } = req.body || {};
+    if (!nombre || !tipo_pago || !medio_pago) return res.status(400).json({ error: 'Faltan campos' });
+    const cfg = VENTAS_CONFIG[tipo_pago];
+    if (!cfg) return res.status(400).json({ error: 'tipo_pago inválido' });
+    const fv = fecha_venta || new Date().toISOString().slice(0, 10);
+    const fecha_proximo_pago = cfg.cuotas_total > 1 ? _nextPayDate(fv, 1) : null;
+    const row = {
+      cliente_id: req.cliente_id, nombre,
+      instagram: instagram || null, celular: celular || null,
+      tipo_pago, medio_pago,
+      monto_total: cfg.monto_total, monto_cuota: cfg.monto_cuota,
+      cuotas_total: cfg.cuotas_total, cuotas_pagadas: 1,
+      fecha_venta: fv, fecha_proximo_pago,
+    };
+    const { data, error } = await supabase.from('ventas_manuales').insert([row]).select().single();
+    if (error) throw error;
+    res.status(201).json({ venta: data });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// Marcar cuota como pagada (avanza cuotas_pagadas y recalcula fecha_proximo_pago)
+app.patch('/ventas/:id/pagar-cuota', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    const { data: v, error: fe } = await supabase.from('ventas_manuales')
+      .select('*').eq('id', req.params.id).eq('cliente_id', req.cliente_id).single();
+    if (fe || !v) return res.status(404).json({ error: 'Venta no encontrada' });
+    if (v.cuotas_pagadas >= v.cuotas_total) return res.status(400).json({ error: 'Ya está totalmente pagada' });
+    const nuevasPagadas = v.cuotas_pagadas + 1;
+    const nuevaFecha = nuevasPagadas < v.cuotas_total
+      ? _nextPayDate(v.fecha_proximo_pago, 1)
+      : null;
+    const { data, error } = await supabase.from('ventas_manuales')
+      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha })
+      .eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json({ venta: data });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/ventas/:id', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    const { error } = await supabase.from('ventas_manuales')
+      .delete().eq('id', req.params.id).eq('cliente_id', req.cliente_id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// ─── FIN VENTAS MANUALES ───────────────────────────────────────────────────────
+
 // Listar respuestas del diagnóstico (requiere auth + admin)
 app.get('/diagnostico/respuestas', validateAccess, async (req, res) => {
   try {
