@@ -8078,7 +8078,7 @@ app.get('/ventas', validateAccess, async (req, res) => {
 app.post('/ventas', validateAccess, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
-    const { nombre, instagram, celular, tipo_pago, medio_pago, fecha_venta } = req.body || {};
+    const { nombre, instagram, celular, tipo_pago, medio_pago, fecha_venta, cash_collected } = req.body || {};
     if (!nombre || !tipo_pago || !medio_pago) return res.status(400).json({ error: 'Faltan campos' });
     const cfg = VENTAS_CONFIG[tipo_pago];
     if (!cfg) return res.status(400).json({ error: 'tipo_pago inválido' });
@@ -8091,10 +8091,28 @@ app.post('/ventas', validateAccess, async (req, res) => {
       monto_total: cfg.monto_total, monto_cuota: cfg.monto_cuota,
       cuotas_total: cfg.cuotas_total, cuotas_pagadas: 1,
       fecha_venta: fv, fecha_proximo_pago,
+      cash_collected: cash_collected != null ? Number(cash_collected) : null,
     };
     const { data, error } = await supabase.from('ventas_manuales').insert([row]).select().single();
     if (error) throw error;
     res.status(201).json({ venta: data });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// Actualizar cash_collected (y otros campos editables)
+app.patch('/ventas/:id', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    const allowed = ['cash_collected', 'nombre', 'instagram', 'celular', 'medio_pago'];
+    const updates = {};
+    for (const k of allowed) {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    }
+    if (!Object.keys(updates).length) return res.status(400).json({ error: 'Nada que actualizar' });
+    const { data, error } = await supabase.from('ventas_manuales')
+      .update(updates).eq('id', req.params.id).eq('cliente_id', req.cliente_id).select().single();
+    if (error) throw error;
+    res.json({ venta: data });
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
