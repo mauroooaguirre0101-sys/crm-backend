@@ -8103,7 +8103,7 @@ app.post('/ventas', validateAccess, async (req, res) => {
 app.patch('/ventas/:id', validateAccess, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
-    const allowed = ['cash_collected', 'nombre', 'instagram', 'celular', 'medio_pago'];
+    const allowed = ['cash_collected', 'nombre', 'instagram', 'celular', 'medio_pago', 'tipo_pago', 'fecha_venta'];
     const updates = {};
     for (const k of allowed) {
       if (req.body[k] !== undefined) updates[k] = req.body[k];
