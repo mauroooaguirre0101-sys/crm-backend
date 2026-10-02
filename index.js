@@ -8270,14 +8270,12 @@ const TAG_MAP = {
 app.post('/webhook/manychat/:cliente_id', async (req, res) => {
   try {
     const { cliente_id } = req.params;
-    const { token, nombre, tag } = req.body;
+    const { token, nombre, tag, action } = req.body;
     let { telefono, instagram } = req.body;
 
     // Sanitizar: ManyChat a veces envía "{{phone}}" literal si el campo no está mapeado
     if (telefono && /^\{\{/.test(telefono)) telefono = null;
     if (instagram && /^\{\{/.test(instagram)) instagram = null;
-
-    console.log(`[ManyChat DEBUG] cliente_id="${cliente_id}" body:`, JSON.stringify(req.body));
 
     // ── Autenticación por token ──────────────────────────────────────────────
     const expectedToken = process.env.MANYCHAT_WEBHOOK_TOKEN;
@@ -8287,51 +8285,55 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
 
     if (!tag) return res.status(400).json({ error: 'Falta el campo "tag"' });
 
-    const mapping = TAG_MAP[tag];
-    if (!mapping) {
-      // Tag desconocido: igual se registra como etiqueta directa sin mapeo
-      console.log(`[ManyChat] Tag sin mapeo: "${tag}" — se aplica como etiqueta directa`);
-    }
-
-    const nuevoEstado  = mapping?.estado  || null;
-    const nuevaEtiq    = mapping?.etiqueta || tag;
+    const mapping     = TAG_MAP[tag];
+    const nuevoEstado = mapping?.estado || null;
 
     // ── Normalizar campos de búsqueda ────────────────────────────────────────
-    // igNorm sin @ para buscar con y sin prefijo (el CRM puede guardar @usuario o usuario)
-    const igNorm = instagram ? instagram.replace(/^@/, '').toLowerCase() : null;
-    const telNorm = telefono ? telefono.replace(/\s+/g, '') : null;
+    const igNorm  = instagram ? instagram.replace(/^@/, '').toLowerCase() : null;
+    const telNorm = telefono  ? telefono.replace(/\s+/g, '')              : null;
 
     // ── Buscar lead existente (por instagram o teléfono) ─────────────────────
-    let leadId = null;
+    let leadId   = null;
     let leadData = null;
 
     if (igNorm) {
-      // Busca en tabla leads (sin @ y con @)
       const [r1, r2] = await Promise.all([
-        supabase.from('leads').select('id, estado').eq('cliente_id', cliente_id).eq('instagram', igNorm).limit(1).maybeSingle(),
-        supabase.from('leads').select('id, estado').eq('cliente_id', cliente_id).eq('instagram', '@' + igNorm).limit(1).maybeSingle(),
+        supabase.from('leads').select('id, estado, estado_anterior').eq('cliente_id', cliente_id).eq('instagram', igNorm).limit(1).maybeSingle(),
+        supabase.from('leads').select('id, estado, estado_anterior').eq('cliente_id', cliente_id).eq('instagram', '@' + igNorm).limit(1).maybeSingle(),
       ]);
       const found = r1.data || r2.data;
-      console.log(`[ManyChat DEBUG] búsqueda IG "${igNorm}" →`, found?.id || 'ninguno');
       if (found) { leadId = found.id; leadData = found; }
     }
 
     if (!leadId && telNorm) {
       const { data } = await supabase.from('leads')
-        .select('id, estado')
-        .eq('cliente_id', cliente_id)
-        .eq('celular', telNorm)
+        .select('id, estado, estado_anterior')
+        .eq('cliente_id', cliente_id).eq('celular', telNorm)
         .limit(1).maybeSingle();
       if (data) { leadId = data.id; leadData = data; }
     }
 
     // ── Actualizar o crear lead ──────────────────────────────────────────────
     if (leadId) {
-      const updates = {};
-      if (nuevoEstado) updates.estado = nuevoEstado;
 
-      const { error } = await supabase.from('leads')
-        .update(updates).eq('id', leadId);
+      if (action === 'remove') {
+        // Quitar etiqueta → restaurar estado anterior
+        const estadoRestore = leadData.estado_anterior || 'Primer contacto';
+        const { error } = await supabase.from('leads')
+          .update({ estado: estadoRestore, estado_anterior: null }).eq('id', leadId);
+        if (error) throw error;
+        console.log(`[ManyChat] ↩ Lead ${leadId} revertido → estado="${estadoRestore}"`);
+        return res.json({ ok: true, action: 'reverted', lead_id: leadId, estado: estadoRestore });
+      }
+
+      // Aplicar etiqueta → guardar estado anterior y actualizar
+      const updates = {};
+      if (nuevoEstado) {
+        updates.estado_anterior = leadData.estado || null;
+        updates.estado          = nuevoEstado;
+      }
+
+      const { error } = await supabase.from('leads').update(updates).eq('id', leadId);
       if (error) throw error;
 
       console.log(`[ManyChat] ✓ Lead ${leadId} actualizado | tag="${tag}" → estado="${nuevoEstado}"`);
