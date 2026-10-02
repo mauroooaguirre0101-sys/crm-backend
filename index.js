@@ -8250,22 +8250,32 @@ app.post('/diagnostico/barbero', async (req, res) => {
 const TAG_MAP = {
   // Etiqueta ManyChat                → { estado, etiqueta } en el CRM
   'Se le mando VSL':                 { estado: 'Contactado',     etiqueta: 'VSL enviado' },
+  'VSL Enviado':                     { estado: 'Contactado',     etiqueta: 'VSL enviado' },
+  'VSL enviado':                     { estado: 'Contactado',     etiqueta: 'VSL enviado' },
   'VSL visto':                       { estado: 'Contactado',     etiqueta: 'VSL visto' },
+  'VSL Visto':                       { estado: 'Contactado',     etiqueta: 'VSL visto' },
   'Agendó llamada':                  { estado: 'Agendada',       etiqueta: 'Agenda confirmada' },
+  'Agendo llamada':                  { estado: 'Agendada',       etiqueta: 'Agenda confirmada' },
   'No agendó':                       { estado: 'No agenda',      etiqueta: 'No agenda' },
+  'No agendo':                       { estado: 'No agenda',      etiqueta: 'No agenda' },
   'Llamada completada':              { estado: 'Realizada',      etiqueta: 'Llamada hecha' },
   'Cerró':                           { estado: 'Cerrado',        etiqueta: 'Cliente' },
+  'Cerro':                           { estado: 'Cerrado',        etiqueta: 'Cliente' },
   'No cerró':                        { estado: 'No cierre',      etiqueta: 'No cierre' },
+  'No cerro':                        { estado: 'No cierre',      etiqueta: 'No cierre' },
 };
 
 app.post('/webhook/manychat/:cliente_id', async (req, res) => {
   try {
     const { cliente_id } = req.params;
-    const { token, nombre, telefono, instagram, tag } = req.body;
+    const { token, nombre, tag } = req.body;
+    let { telefono, instagram } = req.body;
 
-    // DEBUG temporal — ver exactamente qué llega del webhook
-    console.log('[ManyChat DEBUG] body completo:', JSON.stringify(req.body));
-    console.log(`[ManyChat DEBUG] instagram="${instagram}" nombre="${nombre}" telefono="${telefono}" tag="${tag}"`);
+    // Sanitizar: ManyChat a veces envía "{{phone}}" literal si el campo no está mapeado
+    if (telefono && /^\{\{/.test(telefono)) telefono = null;
+    if (instagram && /^\{\{/.test(instagram)) instagram = null;
+
+    console.log('[ManyChat DEBUG] body:', JSON.stringify(req.body));
 
     // ── Autenticación por token ──────────────────────────────────────────────
     const expectedToken = process.env.MANYCHAT_WEBHOOK_TOKEN;
@@ -8294,19 +8304,18 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
     let leadData = null;
 
     if (igNorm) {
-      // Busca tanto "usuario" como "@usuario" con ILIKE %igNorm
       const { data, error: igErr } = await supabase.from('calls')
-        .select('id, instagram, whatsapp, estado, etiqueta')
+        .select('id, estado')
         .eq('cliente_id', cliente_id)
         .ilike('instagram', `%${igNorm}`)
         .limit(1).maybeSingle();
-      console.log(`[ManyChat DEBUG] búsqueda IG "%${igNorm}" → encontrado:`, data?.id || 'ninguno', igErr?.message || '');
+      console.log(`[ManyChat DEBUG] búsqueda IG "%${igNorm}" →`, data?.id || 'ninguno', igErr?.message || '');
       if (data) { leadId = data.id; leadData = data; }
     }
 
     if (!leadId && telNorm) {
       const { data } = await supabase.from('calls')
-        .select('id, instagram, whatsapp, estado, etiqueta')
+        .select('id, estado')
         .eq('cliente_id', cliente_id)
         .eq('whatsapp', telNorm)
         .limit(1).maybeSingle();
@@ -8315,16 +8324,15 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
 
     // ── Actualizar o crear lead ──────────────────────────────────────────────
     if (leadId) {
-      // Lead encontrado → actualizar estado y etiqueta
-      const updates = { etiqueta: nuevaEtiq };
+      const updates = {};
       if (nuevoEstado) updates.estado = nuevoEstado;
 
       const { error } = await supabase.from('calls')
         .update(updates).eq('id', leadId);
       if (error) throw error;
 
-      console.log(`[ManyChat] ✓ Lead ${leadId} actualizado | tag="${tag}" → estado="${nuevoEstado}" etiqueta="${nuevaEtiq}"`);
-      return res.json({ ok: true, action: 'updated', lead_id: leadId, estado: nuevoEstado, etiqueta: nuevaEtiq });
+      console.log(`[ManyChat] ✓ Lead ${leadId} actualizado | tag="${tag}" → estado="${nuevoEstado}"`);
+      return res.json({ ok: true, action: 'updated', lead_id: leadId, estado: nuevoEstado });
 
     } else {
       // Lead no encontrado → crear nuevo
@@ -8334,7 +8342,6 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
         instagram: igNorm  || null,
         whatsapp:  telNorm || null,
         estado:    nuevoEstado || 'Prospecto',
-        etiqueta:  nuevaEtiq,
         origen:    'ManyChat',
         fecha_llamada: new Date().toISOString().slice(0, 10),
       };
