@@ -8277,7 +8277,7 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
     if (telefono && /^\{\{/.test(telefono)) telefono = null;
     if (instagram && /^\{\{/.test(instagram)) instagram = null;
 
-    console.log('[ManyChat DEBUG] body:', JSON.stringify(req.body));
+    console.log(`[ManyChat DEBUG] cliente_id="${cliente_id}" body:`, JSON.stringify(req.body));
 
     // ── Autenticación por token ──────────────────────────────────────────────
     const expectedToken = process.env.MANYCHAT_WEBHOOK_TOKEN;
