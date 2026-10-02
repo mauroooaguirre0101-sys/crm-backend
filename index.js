@@ -8281,6 +8281,7 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
     const nuevaEtiq    = mapping?.etiqueta || tag;
 
     // ── Normalizar campos de búsqueda ────────────────────────────────────────
+    // igNorm sin @ para buscar con y sin prefijo (el CRM puede guardar @usuario o usuario)
     const igNorm = instagram ? instagram.replace(/^@/, '').toLowerCase() : null;
     const telNorm = telefono ? telefono.replace(/\s+/g, '') : null;
 
@@ -8289,10 +8290,11 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
     let leadData = null;
 
     if (igNorm) {
+      // Busca tanto "usuario" como "@usuario" con ILIKE %igNorm
       const { data } = await supabase.from('calls')
         .select('id, instagram, whatsapp, estado, etiqueta')
         .eq('cliente_id', cliente_id)
-        .ilike('instagram', igNorm)
+        .ilike('instagram', `%${igNorm}`)
         .limit(1).maybeSingle();
       if (data) { leadId = data.id; leadData = data; }
     }
