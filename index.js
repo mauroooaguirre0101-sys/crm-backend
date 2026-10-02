@@ -8248,21 +8248,23 @@ app.post('/diagnostico/barbero', async (req, res) => {
 // Agrega más entradas en TAG_MAP según tus etiquetas de ManyChat.
 
 const TAG_MAP = {
-  // Etiqueta ManyChat                → { estado, etiqueta } en el CRM
-  'Se le mando VSL':                 { estado: 'Contactado',     etiqueta: 'VSL enviado' },
-  'VSL Enviado':                     { estado: 'Contactado',     etiqueta: 'VSL enviado' },
-  'VSL enviado':                     { estado: 'Contactado',     etiqueta: 'VSL enviado' },
-  'VSL visto':                       { estado: 'Contactado',     etiqueta: 'VSL visto' },
-  'VSL Visto':                       { estado: 'Contactado',     etiqueta: 'VSL visto' },
-  'Agendó llamada':                  { estado: 'Agendada',       etiqueta: 'Agenda confirmada' },
-  'Agendo llamada':                  { estado: 'Agendada',       etiqueta: 'Agenda confirmada' },
-  'No agendó':                       { estado: 'No agenda',      etiqueta: 'No agenda' },
-  'No agendo':                       { estado: 'No agenda',      etiqueta: 'No agenda' },
-  'Llamada completada':              { estado: 'Realizada',      etiqueta: 'Llamada hecha' },
-  'Cerró':                           { estado: 'Cerrado',        etiqueta: 'Cliente' },
-  'Cerro':                           { estado: 'Cerrado',        etiqueta: 'Cliente' },
-  'No cerró':                        { estado: 'No cierre',      etiqueta: 'No cierre' },
-  'No cerro':                        { estado: 'No cierre',      etiqueta: 'No cierre' },
+  // ── Etiquetas ManyChat → estado CRM ──────────────────────────────────────
+  // cliente_6 (barberia)
+  'Averiguando Dolores':             { estado: 'Descubrimiento (Dolores)' },
+  'Averiguando Deseos':              { estado: 'Descubrimiento (Deseos)' },
+  'Recurso de Nutrición':            { estado: 'Nutriendose' },
+  'Recurso de Nutricion':            { estado: 'Nutriendose' },
+  'VSL Enviado':                     { estado: 'VSL Enviado' },
+  'VSL enviado':                     { estado: 'VSL Enviado' },
+  'Link de Pago Enviado':            { estado: 'Link de Pago Enviado' },
+  'Seña':                            { estado: 'Seña' },
+  'Sena':                            { estado: 'Seña' },
+  'Cerrado':                         { estado: 'Cerrado' },
+  'Cerró':                           { estado: 'Cerrado' },
+  'Cerro':                           { estado: 'Cerrado' },
+  'Perdido':                         { estado: 'Perdido' },
+  'En seguimiento':                  { estado: 'En Seguimiento' },
+  'En Seguimiento':                  { estado: 'En Seguimiento' },
 };
 
 app.post('/webhook/manychat/:cliente_id', async (req, res) => {
