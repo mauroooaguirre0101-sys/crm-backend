@@ -8227,6 +8227,125 @@ app.post('/diagnostico/barbero', async (req, res) => {
   }
 });
 
+// ─── MANYCHAT WEBHOOK ────────────────────────────────────────────────────────
+//
+// ManyChat External Request → POST /webhook/manychat/:cliente_id
+//
+// Cuerpo JSON esperado (configurar en ManyChat):
+// {
+//   "token":     "{{MANYCHAT_WEBHOOK_TOKEN}}",   ← variable de env en Railway
+//   "nombre":    "{{first name}} {{last name}}",
+//   "telefono":  "{{phone}}",
+//   "instagram": "{{instagram username}}",        ← o campo personalizado
+//   "tag":       "Se le mando VSL"               ← nombre exacto de la etiqueta
+// }
+//
+// El tag puede mapearse a:
+//   - un estado del lead  (campo `estado` en tabla calls)
+//   - una etiqueta CRM    (campo `etiqueta`)
+//   - ambas cosas
+//
+// Agrega más entradas en TAG_MAP según tus etiquetas de ManyChat.
+
+const TAG_MAP = {
+  // Etiqueta ManyChat                → { estado, etiqueta } en el CRM
+  'Se le mando VSL':                 { estado: 'Contactado',     etiqueta: 'VSL enviado' },
+  'VSL visto':                       { estado: 'Contactado',     etiqueta: 'VSL visto' },
+  'Agendó llamada':                  { estado: 'Agendada',       etiqueta: 'Agenda confirmada' },
+  'No agendó':                       { estado: 'No agenda',      etiqueta: 'No agenda' },
+  'Llamada completada':              { estado: 'Realizada',      etiqueta: 'Llamada hecha' },
+  'Cerró':                           { estado: 'Cerrado',        etiqueta: 'Cliente' },
+  'No cerró':                        { estado: 'No cierre',      etiqueta: 'No cierre' },
+};
+
+app.post('/webhook/manychat/:cliente_id', async (req, res) => {
+  try {
+    const { cliente_id } = req.params;
+    const { token, nombre, telefono, instagram, tag } = req.body;
+
+    // ── Autenticación por token ──────────────────────────────────────────────
+    const expectedToken = process.env.MANYCHAT_WEBHOOK_TOKEN;
+    if (expectedToken && token !== expectedToken) {
+      return res.status(401).json({ error: 'Token inválido' });
+    }
+
+    if (!tag) return res.status(400).json({ error: 'Falta el campo "tag"' });
+
+    const mapping = TAG_MAP[tag];
+    if (!mapping) {
+      // Tag desconocido: igual se registra como etiqueta directa sin mapeo
+      console.log(`[ManyChat] Tag sin mapeo: "${tag}" — se aplica como etiqueta directa`);
+    }
+
+    const nuevoEstado  = mapping?.estado  || null;
+    const nuevaEtiq    = mapping?.etiqueta || tag;
+
+    // ── Normalizar campos de búsqueda ────────────────────────────────────────
+    const igNorm = instagram ? instagram.replace(/^@/, '').toLowerCase() : null;
+    const telNorm = telefono ? telefono.replace(/\s+/g, '') : null;
+
+    // ── Buscar lead existente (por instagram o teléfono) ─────────────────────
+    let leadId = null;
+    let leadData = null;
+
+    if (igNorm) {
+      const { data } = await supabase.from('calls')
+        .select('id, instagram, whatsapp, estado, etiqueta')
+        .eq('cliente_id', cliente_id)
+        .ilike('instagram', igNorm)
+        .limit(1).maybeSingle();
+      if (data) { leadId = data.id; leadData = data; }
+    }
+
+    if (!leadId && telNorm) {
+      const { data } = await supabase.from('calls')
+        .select('id, instagram, whatsapp, estado, etiqueta')
+        .eq('cliente_id', cliente_id)
+        .eq('whatsapp', telNorm)
+        .limit(1).maybeSingle();
+      if (data) { leadId = data.id; leadData = data; }
+    }
+
+    // ── Actualizar o crear lead ──────────────────────────────────────────────
+    if (leadId) {
+      // Lead encontrado → actualizar estado y etiqueta
+      const updates = { etiqueta: nuevaEtiq };
+      if (nuevoEstado) updates.estado = nuevoEstado;
+
+      const { error } = await supabase.from('calls')
+        .update(updates).eq('id', leadId);
+      if (error) throw error;
+
+      console.log(`[ManyChat] ✓ Lead ${leadId} actualizado | tag="${tag}" → estado="${nuevoEstado}" etiqueta="${nuevaEtiq}"`);
+      return res.json({ ok: true, action: 'updated', lead_id: leadId, estado: nuevoEstado, etiqueta: nuevaEtiq });
+
+    } else {
+      // Lead no encontrado → crear nuevo
+      const newLead = {
+        cliente_id,
+        nombre:    nombre || 'Sin nombre',
+        instagram: igNorm  || null,
+        whatsapp:  telNorm || null,
+        estado:    nuevoEstado || 'Prospecto',
+        etiqueta:  nuevaEtiq,
+        origen:    'ManyChat',
+        fecha_llamada: new Date().toISOString().slice(0, 10),
+      };
+      const { data: created, error } = await supabase.from('calls').insert(newLead).select().single();
+      if (error) throw error;
+
+      console.log(`[ManyChat] ✓ Nuevo lead creado id=${created.id} | tag="${tag}"`);
+      return res.json({ ok: true, action: 'created', lead_id: created.id, estado: nuevoEstado, etiqueta: nuevaEtiq });
+    }
+
+  } catch (err) {
+    console.error('[ManyChat Webhook] Error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── FIN MANYCHAT WEBHOOK ─────────────────────────────────────────────────────
+
 // 🚀 SERVER
 const PORT = process.env.PORT || 3000;
 
