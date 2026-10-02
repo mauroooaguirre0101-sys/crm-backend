@@ -8306,13 +8306,15 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
     let leadData = null;
 
     if (igNorm) {
-      const { data, error: igErr } = await supabase.from('calls')
-        .select('id, estado')
-        .eq('cliente_id', cliente_id)
-        .ilike('instagram', `%${igNorm}`)
-        .limit(1).maybeSingle();
-      console.log(`[ManyChat DEBUG] búsqueda IG "%${igNorm}" →`, data?.id || 'ninguno', igErr?.message || '');
-      if (data) { leadId = data.id; leadData = data; }
+      // Busca exacto sin @ y con @ — evita problemas con wildcards SQL (_)
+      const base = supabase.from('calls').select('id, estado').eq('cliente_id', cliente_id);
+      const [r1, r2] = await Promise.all([
+        base.eq('instagram', igNorm).limit(1).maybeSingle(),
+        base.eq('instagram', '@' + igNorm).limit(1).maybeSingle(),
+      ]);
+      const found = r1.data || r2.data;
+      console.log(`[ManyChat DEBUG] búsqueda IG "${igNorm}" →`, found?.id || 'ninguno');
+      if (found) { leadId = found.id; leadData = found; }
     }
 
     if (!leadId && telNorm) {
