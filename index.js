@@ -8263,6 +8263,10 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
     const { cliente_id } = req.params;
     const { token, nombre, telefono, instagram, tag } = req.body;
 
+    // DEBUG temporal — ver exactamente qué llega del webhook
+    console.log('[ManyChat DEBUG] body completo:', JSON.stringify(req.body));
+    console.log(`[ManyChat DEBUG] instagram="${instagram}" nombre="${nombre}" telefono="${telefono}" tag="${tag}"`);
+
     // ── Autenticación por token ──────────────────────────────────────────────
     const expectedToken = process.env.MANYCHAT_WEBHOOK_TOKEN;
     if (expectedToken && token !== expectedToken) {
@@ -8291,11 +8295,12 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
 
     if (igNorm) {
       // Busca tanto "usuario" como "@usuario" con ILIKE %igNorm
-      const { data } = await supabase.from('calls')
+      const { data, error: igErr } = await supabase.from('calls')
         .select('id, instagram, whatsapp, estado, etiqueta')
         .eq('cliente_id', cliente_id)
         .ilike('instagram', `%${igNorm}`)
         .limit(1).maybeSingle();
+      console.log(`[ManyChat DEBUG] búsqueda IG "%${igNorm}" → encontrado:`, data?.id || 'ninguno', igErr?.message || '');
       if (data) { leadId = data.id; leadData = data; }
     }
 
