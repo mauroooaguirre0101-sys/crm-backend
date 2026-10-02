@@ -8306,27 +8306,21 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
     let leadData = null;
 
     if (igNorm) {
-      // Busca exacto sin @ y con @ — evita problemas con wildcards SQL (_)
+      // Busca en tabla leads (sin @ y con @)
       const [r1, r2] = await Promise.all([
-        supabase.from('calls').select('id, estado, instagram').eq('cliente_id', cliente_id).eq('instagram', igNorm).limit(1).maybeSingle(),
-        supabase.from('calls').select('id, estado, instagram').eq('cliente_id', cliente_id).eq('instagram', '@' + igNorm).limit(1).maybeSingle(),
+        supabase.from('leads').select('id, estado').eq('cliente_id', cliente_id).eq('instagram', igNorm).limit(1).maybeSingle(),
+        supabase.from('leads').select('id, estado').eq('cliente_id', cliente_id).eq('instagram', '@' + igNorm).limit(1).maybeSingle(),
       ]);
       const found = r1.data || r2.data;
-      console.log(`[ManyChat DEBUG] busq sin@="${igNorm}" → id=${r1.data?.id||'—'} err=${r1.error?.message||'—'}`);
-      console.log(`[ManyChat DEBUG] busq con@="@${igNorm}" → id=${r2.data?.id||'—'} err=${r2.error?.message||'—'}`);
-      // Fallback: buscar sin filtro de cliente para ver si existe en otro cliente
-      if (!found) {
-        const { data: anywhere } = await supabase.from('calls').select('id, cliente_id, instagram').ilike('instagram', igNorm).limit(3);
-        console.log(`[ManyChat DEBUG] fallback sin cliente_id filter:`, JSON.stringify(anywhere));
-      }
+      console.log(`[ManyChat DEBUG] búsqueda IG "${igNorm}" →`, found?.id || 'ninguno');
       if (found) { leadId = found.id; leadData = found; }
     }
 
     if (!leadId && telNorm) {
-      const { data } = await supabase.from('calls')
+      const { data } = await supabase.from('leads')
         .select('id, estado')
         .eq('cliente_id', cliente_id)
-        .eq('whatsapp', telNorm)
+        .eq('celular', telNorm)
         .limit(1).maybeSingle();
       if (data) { leadId = data.id; leadData = data; }
     }
@@ -8336,7 +8330,7 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
       const updates = {};
       if (nuevoEstado) updates.estado = nuevoEstado;
 
-      const { error } = await supabase.from('calls')
+      const { error } = await supabase.from('leads')
         .update(updates).eq('id', leadId);
       if (error) throw error;
 
@@ -8349,16 +8343,15 @@ app.post('/webhook/manychat/:cliente_id', async (req, res) => {
         cliente_id,
         nombre:    nombre || 'Sin nombre',
         instagram: igNorm  || null,
-        whatsapp:  telNorm || null,
-        estado:    nuevoEstado || 'Prospecto',
+        celular:   telNorm || null,
+        estado:    nuevoEstado || 'Primer Contacto',
         origen:    'ManyChat',
-        fecha_llamada: new Date().toISOString().slice(0, 10),
       };
-      const { data: created, error } = await supabase.from('calls').insert(newLead).select().single();
+      const { data: created, error } = await supabase.from('leads').insert(newLead).select().single();
       if (error) throw error;
 
       console.log(`[ManyChat] ✓ Nuevo lead creado id=${created.id} | tag="${tag}"`);
-      return res.json({ ok: true, action: 'created', lead_id: created.id, estado: nuevoEstado, etiqueta: nuevaEtiq });
+      return res.json({ ok: true, action: 'created', lead_id: created.id, estado: nuevoEstado });
     }
 
   } catch (err) {
