@@ -8128,8 +8128,9 @@ app.patch('/ventas/:id/pagar-cuota', validateAccess, async (req, res) => {
     const nuevaFecha = nuevasPagadas < v.cuotas_total
       ? _nextPayDate(v.fecha_proximo_pago, 1)
       : null;
+    const nuevoCash = (v.cash_collected != null ? +v.cash_collected : 0) + (+v.monto_cuota || 0);
     const { data, error } = await supabase.from('ventas_manuales')
-      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha })
+      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha, cash_collected: nuevoCash })
       .eq('id', req.params.id).select().single();
     if (error) throw error;
     res.json({ venta: data });
