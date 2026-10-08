@@ -8137,6 +8137,34 @@ app.patch('/ventas/:id/pagar-cuota', validateAccess, async (req, res) => {
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
+// Deshacer último pago de cuota
+app.patch('/ventas/:id/deshacer-cuota', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    const { data: v, error: fe } = await supabase.from('ventas_manuales')
+      .select('*').eq('id', req.params.id).eq('cliente_id', req.cliente_id).single();
+    if (fe || !v) return res.status(404).json({ error: 'Venta no encontrada' });
+    if (v.cuotas_pagadas <= 0) return res.status(400).json({ error: 'No hay pagos que deshacer' });
+    const nuevasPagadas = v.cuotas_pagadas - 1;
+    // Recalcular fecha_proximo_pago: restar un mes a la actual (o a fecha_venta + nuevasPagadas meses si no hay fecha actual)
+    let nuevaFecha;
+    if (v.fecha_proximo_pago) {
+      const d = new Date(v.fecha_proximo_pago);
+      d.setMonth(d.getMonth() - 1);
+      nuevaFecha = d.toISOString().slice(0, 10);
+    } else {
+      // Estaba saldado, recalcular desde fecha_venta
+      nuevaFecha = _nextPayDate(v.fecha_venta, nuevasPagadas);
+    }
+    const nuevoCash = Math.max(0, (v.cash_collected != null ? +v.cash_collected : 0) - (+v.monto_cuota || 0));
+    const { data, error } = await supabase.from('ventas_manuales')
+      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha, cash_collected: nuevoCash })
+      .eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json({ venta: data });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
 app.delete('/ventas/:id', validateAccess, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
