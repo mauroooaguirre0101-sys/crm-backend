@@ -8165,6 +8165,19 @@ app.patch('/ventas/:id/deshacer-cuota', validateAccess, async (req, res) => {
   } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
+// Toggle estado baja/activo
+app.patch('/ventas/:id/estado', validateAccess, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
+    const { estado } = req.body || {};
+    if (!['activo','baja'].includes(estado)) return res.status(400).json({ error: 'Estado inválido' });
+    const { data, error } = await supabase.from('ventas_manuales')
+      .update({ estado }).eq('id', req.params.id).eq('cliente_id', req.cliente_id).select().single();
+    if (error) throw error;
+    res.json({ venta: data });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
 app.delete('/ventas/:id', validateAccess, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Solo admins' });
