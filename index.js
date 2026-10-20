@@ -8129,8 +8129,10 @@ app.patch('/ventas/:id/pagar-cuota', validateAccess, async (req, res) => {
       ? _nextPayDate(v.fecha_proximo_pago, 1)
       : null;
     const nuevoCash = (v.cash_collected != null ? +v.cash_collected : 0) + (+v.monto_cuota || 0);
+    const fechasPagos = Array.isArray(v.fechas_pagos) ? [...v.fechas_pagos] : [];
+    fechasPagos.push(new Date().toISOString().slice(0, 10));
     const { data, error } = await supabase.from('ventas_manuales')
-      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha, cash_collected: nuevoCash })
+      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha, cash_collected: nuevoCash, fechas_pagos: fechasPagos })
       .eq('id', req.params.id).select().single();
     if (error) throw error;
     res.json({ venta: data });
@@ -8157,8 +8159,10 @@ app.patch('/ventas/:id/deshacer-cuota', validateAccess, async (req, res) => {
       nuevaFecha = _nextPayDate(v.fecha_venta, nuevasPagadas);
     }
     const nuevoCash = Math.max(0, (v.cash_collected != null ? +v.cash_collected : 0) - (+v.monto_cuota || 0));
+    const fechasPagos = Array.isArray(v.fechas_pagos) ? [...v.fechas_pagos] : [];
+    fechasPagos.pop();
     const { data, error } = await supabase.from('ventas_manuales')
-      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha, cash_collected: nuevoCash })
+      .update({ cuotas_pagadas: nuevasPagadas, fecha_proximo_pago: nuevaFecha, cash_collected: nuevoCash, fechas_pagos: fechasPagos })
       .eq('id', req.params.id).select().single();
     if (error) throw error;
     res.json({ venta: data });
